@@ -53,12 +53,14 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
 )
 COLLEGE_EMAIL_DOMAIN = os.environ.get(
+    "COLLEGE_EMAIL_DOMAIN", "psnacet.edu.in"
 ).strip().lower().lstrip("@")
 OTP_LIFETIME_SECONDS = 5 * 60
 OTP_RESEND_SECONDS = 60
 OTP_MAX_ATTEMPTS = 5
 
 DATABASE = Path(__file__).with_name("canteen.db")
+STUDENT_DATABASE = Path(__file__).with_name("student.db")
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 
