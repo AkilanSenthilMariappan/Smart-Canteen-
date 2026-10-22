@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Smart Canteen | Admin Dashboard</title>
 
     <script src="https://unpkg.com/html5-qrcode"></script>
@@ -606,6 +607,9 @@
 </main>
 
 <script>
+    // Flask-WTF CSRF token for protected POST requests.
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+
     // Shared scanner state prevents accidental duplicate requests.
     let scannerBusy = false;
     let lastScannedText = "";
@@ -664,7 +668,8 @@
             const response = await fetch("/api/orders/verify", {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": csrfToken
                 },
                 // Keep this key consistent with the existing camera flow.
                 body: JSON.stringify({
@@ -771,7 +776,8 @@
             const response = await fetch("/api/orders/verify-code", {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": csrfToken
                 },
                 body: JSON.stringify({
                     pickup_code: pickupCode
