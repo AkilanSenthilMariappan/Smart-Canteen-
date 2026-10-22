@@ -1,0 +1,332 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Student Login | Smart Canteen</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17251c;background:#f4f8f4}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:22px}
+.shell{width:min(100%,480px)}
+.brand{font-weight:800;font-size:28px;letter-spacing:-.7px;margin:0 0 6px}
+.subtitle{color:#607064;margin:0 0 22px}
+.card{background:white;border:1px solid #e1e9e1;border-radius:20px;padding:24px;box-shadow:0 14px 40px #183c2410}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:22px}
+.tabs button{border:0;border-radius:10px;background:#f0f4f0;padding:11px 6px;font-weight:700;color:#4b5d4f;cursor:pointer}
+.tabs button.active{background:#176b3a;color:white}
+.panel[hidden]{display:none}
+label{display:block;font-size:13px;font-weight:700;margin:15px 0 7px}
+input{width:100%;border:1px solid #cfd9d0;border-radius:10px;padding:12px 13px;font:inherit;outline:none}
+input:focus{border-color:#21844a;box-shadow:0 0 0 3px #21844a20}
+.primary,.secondary{width:100%;border:0;border-radius:10px;padding:12px;font:inherit;font-weight:750;cursor:pointer;margin-top:15px}
+.primary{background:#176b3a;color:white}
+.secondary{background:#edf5ef;color:#176b3a}
+.primary:disabled,.secondary:disabled{opacity:.6;cursor:wait}
+.hint{font-size:12px;color:#6b796e;line-height:1.5;margin:8px 0 0}
+.message{padding:11px 12px;border-radius:10px;background:#edf5ef;color:#215b35;margin:0 0 15px;font-size:14px;line-height:1.45}
+.message.error{background:#fff0ee;color:#9b2b1e}
+.section-title{font-size:20px;margin:0 0 5px}
+.section-copy{font-size:13px;color:#66766a;margin:0}
+.hidden-step{display:none}
+.footer{font-size:12px;color:#738076;text-align:center;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <p class="brand">Smart Canteen</p>
+  <p class="subtitle">A faster way to order on campus.</p>
+
+  <div class="card">
+    <div id="message" class="message" hidden role="status"></div>
+
+    <div class="tabs" role="tablist" aria-label="Account options">
+      <button class="active" data-mode="login" type="button">Sign in</button>
+      <button data-mode="register" type="button">Create account</button>
+      <button data-mode="reset" type="button">Reset password</button>
+    </div>
+
+    <section class="panel" id="panel-login">
+      <h1 class="section-title">Welcome back</h1>
+      <p class="section-copy">Sign in with your college email.</p>
+
+      <form id="login-form">
+        <label for="login-email">College email</label>
+        <input id="login-email" type="email" autocomplete="username"
+               placeholder="you@{{ email_domain }}" required>
+
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password"
+               autocomplete="current-password" required>
+
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <section class="panel" id="panel-register" hidden>
+      <h1 class="section-title">Create your account</h1>
+      <p class="section-copy">Verify your college email, then set your name and password.</p>
+
+      <form id="register-email-form">
+        <label for="register-email">College email</label>
+        <input id="register-email" type="email" autocomplete="email"
+               placeholder="you@{{ email_domain }}" required>
+        <button class="primary" type="submit">Send OTP</button>
+      </form>
+
+      <div id="register-verify-step" class="hidden-step">
+        <label for="register-otp">6-digit OTP</label>
+        <input id="register-otp" inputmode="numeric" maxlength="6"
+               autocomplete="one-time-code" placeholder="Enter the code from your email">
+        <p class="hint">The code expires in 5 minutes. Each code can be used once.</p>
+        <button class="secondary" id="register-verify-button" type="button">Verify email</button>
+      </div>
+
+      <form id="register-finish-form" class="hidden-step">
+        <label for="register-name">Your name</label>
+        <input id="register-name" maxlength="80" autocomplete="name"
+               placeholder="Name shown on your bookings" required>
+
+        <label for="register-password">Create password</label>
+        <input id="register-password" type="password" minlength="8" maxlength="128"
+               autocomplete="new-password" placeholder="At least 8 characters" required>
+
+        <button class="primary" type="submit">Create account</button>
+      </form>
+    </section>
+
+    <section class="panel" id="panel-reset" hidden>
+      <h1 class="section-title">Reset your password</h1>
+      <p class="section-copy">Verify your college email to choose a new password.</p>
+
+      <form id="reset-email-form">
+        <label for="reset-email">College email</label>
+        <input id="reset-email" type="email" autocomplete="email"
+               placeholder="you@{{ email_domain }}" required>
+        <button class="primary" type="submit">Send OTP</button>
+      </form>
+
+      <div id="reset-verify-step" class="hidden-step">
+        <label for="reset-otp">6-digit OTP</label>
+        <input id="reset-otp" inputmode="numeric" maxlength="6"
+               autocomplete="one-time-code" placeholder="Enter the code from your email">
+        <p class="hint">The code expires in 5 minutes. Each code can be used once.</p>
+        <button class="secondary" id="reset-verify-button" type="button">Verify email</button>
+      </div>
+
+      <form id="reset-finish-form" class="hidden-step">
+        <label for="reset-password">New password</label>
+        <input id="reset-password" type="password" minlength="8" maxlength="128"
+               autocomplete="new-password" required>
+        <button class="primary" type="submit">Save new password</button>
+      </form>
+    </section>
+  </div>
+
+  <p class="footer">Only email addresses ending in @{{ email_domain }} can register.</p>
+</div>
+
+<script>
+"use strict";
+
+const messageBox = document.getElementById("message");
+let verifiedEmail = { register: "", reset: "" };
+
+function showMessage(message, error = false) {
+    messageBox.textContent = message;
+    messageBox.hidden = !message;
+    messageBox.classList.toggle("error", error);
+}
+
+function setBusy(button, busy, label) {
+    if (!button.dataset.originalLabel) {
+        button.dataset.originalLabel = button.textContent;
+    }
+    button.disabled = busy;
+    button.textContent = busy ? label : button.dataset.originalLabel;
+}
+
+/* Shared API function: includes the CSRF token in every POST request. */
+async function api(url, payload) {
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+
+    if (!csrfMeta || !csrfMeta.content) {
+        throw new Error("Security token missing. Please refresh the page.");
+    }
+
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": csrfMeta.content
+        },
+        body: JSON.stringify(payload)
+    });
+
+    const result = await response.json().catch(() => ({
+        error: "The server returned an unreadable response."
+    }));
+
+    if (!response.ok) {
+        throw new Error(result.error || "Something went wrong.");
+    }
+
+    return result;
+}
+
+function switchMode(mode) {
+    document.querySelectorAll(".tabs button").forEach(button => {
+        button.classList.toggle("active", button.dataset.mode === mode);
+    });
+
+    document.querySelectorAll(".panel").forEach(panel => {
+        panel.hidden = panel.id !== "panel-" + mode;
+    });
+
+    showMessage("");
+}
+
+document.querySelectorAll(".tabs button").forEach(button => {
+    button.addEventListener("click", () => switchMode(button.dataset.mode));
+});
+
+async function requestOtp(mode, event) {
+    event.preventDefault();
+
+    const email = document.getElementById(mode + "-email").value.trim().toLowerCase();
+    const button = event.submitter;
+
+    setBusy(button, true, "Sending...");
+
+    try {
+        const result = await api("/api/auth/request-otp", {
+            email,
+            purpose: mode
+        });
+
+        showMessage(result.message || "OTP sent. Check your college inbox.");
+
+        document.getElementById(mode + "-verify-step").style.display = "block";
+        document.getElementById(mode + "-otp").focus();
+
+        verifiedEmail[mode] = "";
+    } catch (error) {
+        showMessage(error.message, true);
+    } finally {
+        setBusy(button, false);
+    }
+}
+
+document.getElementById("register-email-form")
+    .addEventListener("submit", event => requestOtp("register", event));
+
+document.getElementById("reset-email-form")
+    .addEventListener("submit", event => requestOtp("reset", event));
+
+async function verifyOtp(mode) {
+    const email = document.getElementById(mode + "-email").value.trim().toLowerCase();
+    const otp = document.getElementById(mode + "-otp").value.trim();
+    const button = document.getElementById(mode + "-verify-button");
+
+    setBusy(button, true, "Verifying...");
+
+    try {
+        const result = await api("/api/auth/verify-otp", {
+            email,
+            purpose: mode,
+            otp
+        });
+
+        verifiedEmail[mode] = email;
+
+        document.getElementById(mode + "-email").readOnly = true;
+        document.getElementById(mode + "-otp").readOnly = true;
+        document.getElementById(mode + "-finish-form").style.display = "block";
+
+        button.disabled = true;
+        showMessage((result.message || "Email verified.") + " You can continue.");
+    } catch (error) {
+        showMessage(error.message, true);
+    } finally {
+        if (!verifiedEmail[mode]) {
+            setBusy(button, false);
+        }
+    }
+}
+
+document.getElementById("register-verify-button")
+    .addEventListener("click", () => verifyOtp("register"));
+
+document.getElementById("reset-verify-button")
+    .addEventListener("click", () => verifyOtp("reset"));
+
+document.getElementById("login-form").addEventListener("submit", async event => {
+    event.preventDefault();
+
+    const button = event.submitter;
+    setBusy(button, true, "Signing in...");
+
+    try {
+        const result = await api("/api/auth/login", {
+            email: document.getElementById("login-email").value.trim(),
+            password: document.getElementById("login-password").value
+        });
+
+        window.location.href = result.redirect || "/";
+    } catch (error) {
+        showMessage(error.message, true);
+    } finally {
+        setBusy(button, false);
+    }
+});
+
+document.getElementById("register-finish-form").addEventListener("submit", async event => {
+    event.preventDefault();
+
+    const button = event.submitter;
+    setBusy(button, true, "Creating account...");
+
+    try {
+        const result = await api("/api/auth/register", {
+            email: verifiedEmail.register,
+            name: document.getElementById("register-name").value.trim(),
+            password: document.getElementById("register-password").value
+        });
+
+        window.location.href = result.redirect || "/";
+    } catch (error) {
+        showMessage(error.message, true);
+    } finally {
+        setBusy(button, false);
+    }
+});
+
+document.getElementById("reset-finish-form").addEventListener("submit", async event => {
+    event.preventDefault();
+
+    const button = event.submitter;
+    setBusy(button, true, "Saving...");
+
+    try {
+        await api("/api/auth/reset-password", {
+            email: verifiedEmail.reset,
+            password: document.getElementById("reset-password").value
+        });
+
+        const resetEmail = verifiedEmail.reset;
+
+        switchMode("login");
+        document.getElementById("login-email").value = resetEmail;
+
+        showMessage("Password reset successfully. Sign in with your new password.");
+    } catch (error) {
+        showMessage(error.message, true);
+    } finally {
+        setBusy(button, false);
+    }
+});
+</script>
+</body>
+</html>

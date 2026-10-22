@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Bookings | Smart Canteen</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17251c;background:#f4f8f4}*{box-sizing:border-box}body{margin:0}header{background:#176b3a;color:#fff;padding:22px max(20px,calc((100% - 980px)/2))}.headrow{display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap}h1{margin:0;font-size:28px}.sub{margin:6px 0 0;color:#d8ecdd}.header-actions{display:flex;gap:10px;align-items:center}.link,button{border:0;border-radius:10px;padding:10px 14px;font:inherit;font-weight:700;cursor:pointer}.link{background:#fff;color:#176b3a;text-decoration:none}.logout{background:#0f512b;color:#fff}main{width:min(980px,calc(100% - 32px));margin:28px auto}.topline{display:flex;justify-content:space-between;align-items:end;gap:15px;flex-wrap:wrap;margin-bottom:18px}.topline h2{margin:0}.muted{color:#69786c;font-size:14px}.orders{display:grid;gap:16px}.order{background:white;border:1px solid #e0e8e0;border-radius:18px;padding:20px;display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:22px;box-shadow:0 8px 24px #163d2008}.order h3{margin:0 0 5px}.order-meta{font-size:13px;color:#6d7a70}.status{display:inline-block;padding:5px 10px;border-radius:99px;background:#fff4d9;color:#865800;font-size:12px;font-weight:800;text-transform:capitalize}.status.successful{background:#e4f6e9;color:#176b3a}.items{padding:0;margin:15px 0;list-style:none;border-top:1px solid #edf0ed}.items li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #edf0ed;font-size:14px}.total{font-weight:800;font-size:18px;margin-top:12px}.pickup{margin-top:15px;color:#667369;font-size:13px}.code{display:inline-block;font-size:24px;letter-spacing:5px;font-weight:850;color:#176b3a;margin-top:5px}.qr-col{border-left:1px solid #edf0ed;padding-left:20px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.qr{min-height:180px;width:180px;display:grid;place-items:center}.qr img{max-width:100%;height:auto}.qr-caption{font-size:12px;color:#6b796e;line-height:1.45;margin-top:8px}.empty,.error{background:white;border:1px solid #e0e8e0;border-radius:16px;padding:28px;text-align:center;color:#68766b}.error{color:#9b2b1e}.refresh{background:#e7f2e9;color:#176b3a}.bottom-actions{display:flex;gap:10px;justify-content:center;margin-top:22px;flex-wrap:wrap}@media(max-width:640px){.order{grid-template-columns:1fr}.qr-col{border-left:0;border-top:1px solid #edf0ed;padding:18px 0 0}.headrow{align-items:flex-start}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<header><div class="headrow"><div><h1>My Bookings</h1><p class="sub">Signed in as {{ student_name }} · Your bookings stay linked to your account.</p></div><div class="header-actions"><a class="link" href="/">Back to menu</a><form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="logout" type="submit">Log Out</button></form></div></div></header>
+<main>
+  <div class="topline"><div><h2>Your orders</h2><p class="muted">All your account-linked orders, including previous days.</p></div><button id="refresh-button" class="refresh" type="button">Refresh bookings</button></div>
+  <div id="orders" class="orders"><div class="empty">Loading your bookings…</div></div>
+  <div class="bottom-actions"><a class="link" href="/">Order more food</a></div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+"use strict";
+const root=document.getElementById("orders");
+function node(tag,className,text){const el=document.createElement(tag);if(className)el.className=className;if(text!==undefined)el.textContent=text;return el}
+function money(value){return "₹"+Number(value||0).toLocaleString("en-IN")}
+function formatDate(value){if(!value)return "Date unavailable";let date=new Date(value.endsWith("Z")?value:value.replace(" ","T")+"Z");if(Number.isNaN(date.getTime()))return value;return new Intl.DateTimeFormat("en-IN",{dateStyle:"medium",timeStyle:"short",timeZone:"Asia/Kolkata"}).format(date)}
+function renderOrders(orders){root.replaceChildren();if(!orders.length){root.appendChild(node("div","empty","You haven’t placed any orders with this account yet. Choose food from the menu to get started."));return}
+ orders.forEach(order=>{const card=node("article","order");const details=node("div");const title=node("h3","","Order #"+order.order_id);details.appendChild(title);details.appendChild(node("p","order-meta","Placed "+formatDate(order.created_at)));const status=node("span","status"+(order.status==="successful"?" successful":""),order.status||"pending");details.appendChild(status);
+ const list=node("ul","items");(order.items||[]).forEach(item=>{const row=node("li");row.appendChild(node("span", "",item.name+" × "+item.quantity));row.appendChild(node("strong","",money(Number(item.price)*Number(item.quantity))));list.appendChild(row)});details.appendChild(list);details.appendChild(node("p","total","Total: "+money(order.total)));const pickup=node("div","pickup","Pickup code");pickup.appendChild(node("div","code",order.pickup_code||"Unavailable"));details.appendChild(pickup);
+ const qrCol=node("div","qr-col");const qr=node("div","qr");if(order.qr_token&&typeof QRCode!=="undefined"){new QRCode(qr,{text:order.qr_token,width:180,height:180,correctLevel:QRCode.CorrectLevel.M})}else{qr.appendChild(node("p","muted","QR unavailable. Use the pickup code."))}qrCol.appendChild(qr);qrCol.appendChild(node("p","qr-caption","Show this QR code or the six-digit pickup code to canteen staff."));card.append(details,qrCol);root.appendChild(card)})}
+async function loadOrders(){const button=document.getElementById("refresh-button");button.disabled=true;button.textContent="Refreshing…";try{const response=await fetch("/api/my-orders",{headers:{"Accept":"application/json"}});const result=await response.json();if(response.status===401){window.location.href="/login";return}if(!response.ok)throw new Error(result.error||"Could not load your bookings.");renderOrders(result.orders||[])}catch(error){root.replaceChildren(node("div","error",error.message||"Could not load bookings. Check your connection and try again."))}finally{button.disabled=false;button.textContent="Refresh bookings"}}
+document.getElementById("refresh-button").addEventListener("click",loadOrders);loadOrders();
+</script>
+</body>
+</html>

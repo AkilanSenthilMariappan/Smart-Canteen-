@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Canteen</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #f4f8f4;
+            color: #24352a;
+        }
+
+        header {
+            background: #176b3a;
+            color: white;
+            padding: 24px 6%;
+        }
+
+        header h1 {
+            margin: 0 0 8px;
+        }
+
+        header p {
+            margin: 0;
+        }
+
+        main {
+            max-width: 1100px;
+            margin: 28px auto;
+            padding: 0 18px;
+        }
+
+        .menu-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 18px;
+        }
+
+        .menu-card,
+        .panel,
+        .confirmation {
+            background: white;
+            border-radius: 14px;
+            padding: 20px;
+            box-shadow: 0 3px 12px #173b2410;
+        }
+
+        .menu-card h3 {
+            margin-top: 0;
+        }
+
+        .price {
+            font-size: 20px;
+            font-weight: bold;
+            color: #176b3a;
+        }
+
+        .category {
+            color: #647368;
+            font-size: 14px;
+        }
+
+        button {
+            border: 0;
+            border-radius: 8px;
+            padding: 11px 16px;
+            background: #176b3a;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #10552d;
+        }
+
+        button:disabled {
+            background: #a3afa6;
+            cursor: not-allowed;
+        }
+
+        .secondary-button {
+            background: #647368;
+        }
+
+        .cart-row,
+        .confirmed-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 0;
+            border-bottom: 1px solid #e7eee8;
+        }
+
+        .quantity-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .quantity-controls button {
+            padding: 6px 10px;
+        }
+
+        .cart-total {
+            font-size: 21px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+
+        .message {
+            margin: 14px 0;
+            padding: 12px;
+            border-radius: 8px;
+            background: #edf5ee;
+            overflow-wrap: anywhere;
+        }
+
+        .error-message {
+            background: #fff0f0;
+            color: #a21f1f;
+        }
+
+        .confirmation {
+            margin-top: 28px;
+            border: 2px solid #b8ddc1;
+        }
+
+        .confirmation h2 {
+            color: #176b3a;
+        }
+
+        .status-pill {
+            display: inline-block;
+            padding: 6px 12px;
+            background: #fff1c9;
+            color: #785500;
+            border-radius: 20px;
+            font-weight: bold;
+        }
+
+        .status-success {
+            background: #d9f5e0;
+            color: #176b3a;
+        }
+
+        #order-qr {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 20px 0;
+            min-height: 20px;
+        }
+
+        #order-qr img,
+        #order-qr canvas {
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* NEW: Pickup code styling */
+        .pickup-code-card {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px dashed #176b3a;
+            border-radius: 12px;
+            background: #edf8ef;
+            text-align: center;
+        }
+
+        .pickup-code-card h3 {
+            margin-top: 0;
+            color: #176b3a;
+        }
+
+        #pickup-code {
+            display: block;
+            margin: 12px 0;
+            font-size: 36px;
+            font-weight: bold;
+            letter-spacing: 8px;
+            color: #176b3a;
+            overflow-wrap: anywhere;
+        }
+
+        .confirmation-note {
+            font-size: 13px;
+            color: #647368;
+        }
+
+        footer {
+            text-align: center;
+            padding: 24px;
+            color: #647368;
+        }
+
+
+        .header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        .menu-actions { position: relative; }
+        .more-button {
+            background: #ffffff;
+            color: #176b3a;
+            font-size: 25px;
+            line-height: 1;
+            padding: 8px 13px;
+            border: 1px solid #d9eadc;
+        }
+        .more-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 8px);
+            min-width: 190px;
+            background: #fff;
+            border: 1px solid #d9e7dc;
+            border-radius: 10px;
+            box-shadow: 0 8px 24px #0002;
+            padding: 6px;
+            z-index: 20;
+        }
+        .more-menu button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            background: #fff;
+            color: #24352a;
+            padding: 11px;
+        }
+        .more-menu button:hover { background: #edf8ef; }
+        .more-menu form { margin: 0; }
+        .student-welcome { font-size: 13px; margin-top: 6px; opacity: .92; }
+        .menu-search {
+            width: 100%;
+            max-width: 520px;
+            margin: 8px 0 20px;
+            padding: 13px 15px;
+            border: 1px solid #cbd9ce;
+            border-radius: 10px;
+            font: inherit;
+            background: #fff;
+        }
+        .empty-search {
+            padding: 16px;
+            background: #fff;
+            border-radius: 10px;
+            color: #647368;
+        }
+        @media (max-width: 500px) {
+            .header-row { align-items: flex-start; }
+            .header-row h1 { font-size: 25px; }
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+
+        @media (max-width: 500px) {
+            header {
+                padding: 20px;
+            }
+
+            main {
+                padding: 0 12px;
+            }
+
+            .menu-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .cart-row {
+                align-items: flex-start;
+            }
+
+            #pickup-code {
+                font-size: 30px;
+                letter-spacing: 5px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <div class="header-row">
+        <div>
+            <h1>Smart Canteen</h1>
+            <p>Order online. Show your QR code or pickup code. Collect your food.</p>
+            <p class="student-welcome">Signed in as <strong>{{ student_name }}</strong></p>
+        </div>
+        <div class="menu-actions">
+            <button type="button" id="more-menu-button" class="more-button"
+                    aria-label="More options" aria-expanded="false"
+                    aria-controls="student-more-menu">⋮</button>
+            <div id="student-more-menu" class="more-menu" hidden>
+                <button type="button" id="view-booking-button">View My Booking</button>
+                <button type="button" id="edit-name-button">Change My Name</button>
+                <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Log Out</button></form>
+            </div>
+        </div>
+    </div>
+</header>
+
+<main>
+
+    <section>
+        <h2>Today's Menu</h2>
+        <label for="menu-search">Search the menu</label>
+        <input id="menu-search" class="menu-search" type="search"
+               placeholder="Search Idli, Dosa, Biryani..." autocomplete="off">
+        <p id="no-search-results" class="empty-search" hidden>No matching menu items found.</p>
+
+        <div class="menu-grid" id="menu-grid">
+            {% for item in menu_items %}
+            <article class="menu-card">
+                <p class="category">{{ item.category }}</p>
+                <h3>{{ item.name }}</h3>
+                <p class="price">₹{{ item.price }}</p>
+
+                <button
+                    type="button"
+                    class="add-to-cart"
+                    data-id="{{ item.id }}"
+                    data-name="{{ item.name }}"
+                    data-price="{{ item.price }}"
+                    {% if not item.available %}disabled{% endif %}>
+                    {% if item.available %}
+                        Add to cart
+                    {% else %}
+                        Currently unavailable
+                    {% endif %}
+                </button>
+            </article>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section class="panel" style="margin-top: 28px;">
+        <h2>Your Cart</h2>
+
+        <div id="cart-items">
+            <p>Your cart is empty.</p>
+        </div>
+
+        <p class="cart-total">
+            Total: ₹<span id="cart-total">0</span>
+        </p>
+
+        <div
+            id="cart-message"
+            class="message"
+            role="status"
+            aria-live="polite"
+            hidden>
+        </div>
+
+        <button id="continue-button" type="button">
+            Place order
+        </button>
+
+        <button
+            id="clear-cart-button"
+            type="button"
+            class="secondary-button">
+            Clear cart
+        </button>
+    </section>
+
+    <section
+        id="order-confirmation"
+        class="confirmation"
+        hidden
+        aria-live="polite">
+
+        <h2 id="confirmation-heading">Order received!</h2>
+
+        <p>
+            Order number:
+            <strong id="confirmed-order-id"></strong>
+        </p>
+
+        <p>
+            Order status:
+            <span id="confirmed-order-status" class="status-pill">
+                Pending
+            </span>
+        </p>
+
+        <h3>Your Order</h3>
+
+        <div id="confirmed-order-items"></div>
+
+        <p class="cart-total">
+            Total: ₹<strong id="confirmed-order-total"></strong>
+        </p>
+
+        <hr>
+
+        <!-- NEW: Six-digit numeric pickup code -->
+        <div class="pickup-code-card">
+            <h3>Your 6-Digit Pickup Code</h3>
+
+            <p>
+                If the QR scanner does not work, give this code
+                to the canteen staff.
+            </p>
+
+            <strong id="pickup-code">------</strong>
+
+            <p class="confirmation-note">
+                Keep this code private and show it only to canteen staff.
+            </p>
+        </div>
+
+        <h3>Your Collection QR Code</h3>
+
+        <p>
+            Show this QR code to canteen staff when collecting your order.
+        </p>
+
+        <div id="order-qr"></div>
+
+        <p
+            id="live-order-message"
+            class="message"
+            role="status"
+            aria-live="polite">
+            Waiting for staff to verify your order.
+        </p>
+
+        <p class="confirmation-note">
+            Your order remains Pending until staff verifies your QR code
+            or pickup code. Keep this page open until the status updates.
+        </p>
+    </section>
+
+</main>
+
+<footer>
+    Smart Canteen Project
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<script>
+"use strict";
+
+const cart = {};
+
+let orderStatusTimer = null;
+let activeOrderId = null;
+let activeQrToken = null;
+
+function showCartMessage(message, isError) {
+    const box = document.getElementById("cart-message");
+
+    box.textContent = message;
+    box.hidden = message === "";
+    box.classList.toggle("error-message", Boolean(isError));
+}
+
+function renderCart() {
+    const container = document.getElementById("cart-items");
+    const totalElement = document.getElementById("cart-total");
+    const entries = Object.values(cart);
+
+    container.replaceChildren();
+
+    let total = 0;
+
+    if (entries.length === 0) {
+        const emptyMessage = document.createElement("p");
+        emptyMessage.textContent = "Your cart is empty.";
+        container.appendChild(emptyMessage);
+    }
+
+    entries.forEach(function (item) {
+        const subtotal = item.price * item.quantity;
+        total += subtotal;
+
+        const row = document.createElement("div");
+        row.className = "cart-row";
+
+        const details = document.createElement("div");
+
+        const name = document.createElement("strong");
+        name.textContent = item.name;
+
+        const price = document.createElement("div");
+        price.textContent =
+            "₹" + item.price + " × " + item.quantity + " = ₹" + subtotal;
+
+        details.appendChild(name);
+        details.appendChild(price);
+
+        const controls = document.createElement("div");
+        controls.className = "quantity-controls";
+
+        const minusButton = document.createElement("button");
+        minusButton.type = "button";
+        minusButton.textContent = "-";
+        minusButton.setAttribute("aria-label", "Remove one " + item.name);
+
+        minusButton.addEventListener("click", function () {
+            changeQuantity(item.id, -1);
+        });
+
+        const quantity = document.createElement("span");
+        quantity.textContent = item.quantity;
+
+        const plusButton = document.createElement("button");
+        plusButton.type = "button";
+        plusButton.textContent = "+";
+        plusButton.setAttribute("aria-label", "Add one " + item.name);
+
+        plusButton.addEventListener("click", function () {
+            changeQuantity(item.id, 1);
+        });
+
+        controls.appendChild(minusButton);
+        controls.appendChild(quantity);
+        controls.appendChild(plusButton);
+
+        row.appendChild(details);
+        row.appendChild(controls);
+
+        container.appendChild(row);
+    });
+
+    totalElement.textContent = total;
+}
+
+function addToCart(id, name, price) {
+    if (!cart[id]) {
+        cart[id] = {
+            id: id,
+            name: name,
+            price: price,
+            quantity: 0
+        };
+    }
+
+    if (cart[id].quantity >= 50) {
+        showCartMessage("Maximum quantity per item is 50.", true);
+        return;
+    }
+
+    cart[id].quantity += 1;
+
+    showCartMessage("", false);
+    renderCart();
+}
+
+function changeQuantity(id, change) {
+    if (!cart[id]) {
+        return;
+    }
+
+    cart[id].quantity += change;
+
+    if (cart[id].quantity <= 0) {
+        delete cart[id];
+    }
+
+    showCartMessage("", false);
+    renderCart();
+}
+
+function clearCart() {
+    Object.keys(cart).forEach(function (id) {
+        delete cart[id];
+    });
+
+    showCartMessage("", false);
+    renderCart();
+}
+
+function showOrderQr(orderId, token) {
+    const qrContainer = document.getElementById("order-qr");
+    const message = document.getElementById("live-order-message");
+
+    qrContainer.replaceChildren();
+
+    if (typeof QRCode === "undefined") {
+        message.textContent =
+            "QR generator failed to load. Check your internet connection. You can use your pickup code instead.";
+    } else {
+        new QRCode(qrContainer, {
+            text: token,
+            width: 220,
+            height: 220,
+            correctLevel: QRCode.CorrectLevel.M
+        });
+    }
+
+    if (orderStatusTimer !== null) {
+        clearInterval(orderStatusTimer);
+    }
+
+    activeOrderId = orderId;
+    activeQrToken = token;
+
+    checkOrderStatus(orderId, token);
+
+    orderStatusTimer = setInterval(function () {
+        checkOrderStatus(orderId, token);
+    }, 3000);
+}
+
+async function checkOrderStatus(orderId, token) {
+    try {
+        const url =
+            "/api/orders/" + encodeURIComponent(orderId) +
+            "/status?token=" + encodeURIComponent(token);
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            return;
+        }
+
+        const result = await response.json();
+
+        const statusElement =
+            document.getElementById("confirmed-order-status");
+
+        const message =
+            document.getElementById("live-order-message");
+
+        if (result.status === "successful") {
+            statusElement.textContent = "Successful";
+            statusElement.classList.add("status-success");
+
+            document.getElementById("confirmation-heading").textContent =
+                "Order verified successfully!";
+
+            message.textContent =
+                "Your order is verified. Please collect your food from the staff.";
+
+            if (orderStatusTimer !== null) {
+                clearInterval(orderStatusTimer);
+                orderStatusTimer = null;
+            }
+        } else {
+            statusElement.textContent = "Pending";
+            statusElement.classList.remove("status-success");
+
+            message.textContent =
+                "Waiting for staff to verify your QR code or pickup code.";
+        }
+    } catch (error) {
+        console.error("Order status check failed:", error);
+    }
+}
+
+async function continueOrder() {
+    const entries = Object.values(cart);
+
+    if (entries.length === 0) {
+        showCartMessage(
+            "Please add at least one item before placing your order.",
+            true
+        );
+        return;
+    }
+
+    const button = document.getElementById("continue-button");
+
+    button.disabled = true;
+    button.textContent = "Placing order...";
+    showCartMessage("", false);
+
+    try {
+        const response = await fetch("/api/orders", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json", "X-CSRFToken": document.querySelector('meta[name="csrf-token"]').content
+            },
+            body: JSON.stringify({
+                items: entries.map(function (item) {
+                    return {
+                        id: item.id,
+                        quantity: item.quantity
+                    };
+                })
+            })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+            showCartMessage(
+                result.error || "Could not place your order.",
+                true
+            );
+            return;
+        }
+
+        document.getElementById("confirmed-order-id").textContent =
+            result.order_id;
+
+        document.getElementById("confirmed-order-total").textContent =
+            result.total;
+
+        // NEW: Display the pickup code returned by app.py.
+        const pickupCodeElement = document.getElementById("pickup-code");
+
+        if (result.pickup_code !== undefined &&
+            result.pickup_code !== null &&
+            /^\d{6}$/.test(String(result.pickup_code))) {
+
+            pickupCodeElement.textContent = String(result.pickup_code);
+        } else {
+            pickupCodeElement.textContent = "Unavailable";
+
+            console.error(
+                "Pickup code missing or invalid. Check the /api/orders response in app.py."
+            );
+        }
+
+        const statusElement =
+            document.getElementById("confirmed-order-status");
+
+        statusElement.textContent = "Pending";
+        statusElement.classList.remove("status-success");
+
+        document.getElementById("confirmation-heading").textContent =
+            "Order received!";
+
+        document.getElementById("live-order-message").textContent =
+            "Waiting for staff to verify your order.";
+
+        const confirmedItems =
+            document.getElementById("confirmed-order-items");
+
+        confirmedItems.replaceChildren();
+
+        result.items.forEach(function (item) {
+            const row = document.createElement("div");
+            row.className = "confirmed-item";
+
+            const name = document.createElement("span");
+            name.textContent = item.name + " × " + item.quantity;
+
+            const price = document.createElement("strong");
+            price.textContent = "₹" + (item.price * item.quantity);
+
+            row.appendChild(name);
+            row.appendChild(price);
+
+            confirmedItems.appendChild(row);
+        });
+
+        document.getElementById("order-confirmation").hidden = false;
+
+        if (result.qr_token) {
+            showOrderQr(result.order_id, result.qr_token);
+        } else {
+            document.getElementById("live-order-message").textContent =
+                "QR token missing. You can use your pickup code if it is available.";
+        }
+
+        clearCart();
+
+        document.getElementById("order-confirmation").scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+        });
+
+    } catch (error) {
+        console.error("Order submission failed:", error);
+
+        showCartMessage(
+            "Could not contact the server. Please check your connection.",
+            true
+        );
+    } finally {
+        button.disabled = false;
+        button.textContent = "Place order";
+    }
+}
+
+
+document.getElementById("menu-search").addEventListener("input", function () {
+    const query = this.value.trim().toLowerCase();
+    let visibleCount = 0;
+
+    document.querySelectorAll(".menu-card").forEach(function (card) {
+        const matches = card.textContent.toLowerCase().includes(query);
+        card.hidden = !matches;
+        if (matches) visibleCount += 1;
+    });
+
+    document.getElementById("no-search-results").hidden = visibleCount !== 0;
+});
+
+const moreMenuButton = document.getElementById("more-menu-button");
+const moreMenu = document.getElementById("student-more-menu");
+
+moreMenuButton.addEventListener("click", function () {
+    const opening = moreMenu.hidden;
+    moreMenu.hidden = !opening;
+    moreMenuButton.setAttribute("aria-expanded", String(opening));
+});
+
+document.addEventListener("click", function (event) {
+    if (!event.target.closest(".menu-actions")) {
+        moreMenu.hidden = true;
+        moreMenuButton.setAttribute("aria-expanded", "false");
+    }
+});
+
+document.getElementById("view-booking-button").addEventListener("click", function () {
+    moreMenu.hidden = true;
+    moreMenuButton.setAttribute("aria-expanded", "false");
+    window.location.href = "/booking";
+});
+
+document.getElementById("edit-name-button").addEventListener("click", async function () {
+    moreMenu.hidden = true;
+    moreMenuButton.setAttribute("aria-expanded", "false");
+    const currentName = document.querySelector(".student-welcome strong");
+    const updatedName = window.prompt("What name should appear on your Smart Canteen account?", currentName ? currentName.textContent : "");
+    if (updatedName === null) return;
+    const name = updatedName.trim();
+    if (!name || name.length > 80) {
+        showCartMessage("Please enter a name between 1 and 80 characters.", true);
+        return;
+    }
+    try {
+        const response = await fetch("/api/auth/profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" ,"X-CSRFToken": document.querySelector('meta[name="csrf-token"]').content},
+            body: JSON.stringify({ name: name })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Could not update your name.");
+        if (currentName) currentName.textContent = result.name;
+        showCartMessage(result.message, false);
+    } catch (error) {
+        showCartMessage(error.message || "Could not update your name.", true);
+    }
+});
+
+// Attach menu buttons.
+document.querySelectorAll(".add-to-cart").forEach(function (button) {
+    button.addEventListener("click", function () {
+        const id = Number(button.dataset.id);
+        const name = button.dataset.name;
+        const price = Number(button.dataset.price);
+
+        addToCart(id, name, price);
+    });
+});
+
+document.getElementById("continue-button").addEventListener(
+    "click",
+    continueOrder
+);
+
+document.getElementById("clear-cart-button").addEventListener(
+    "click",
+    clearCart
+);
+
+window.addEventListener("beforeunload", function () {
+    if (orderStatusTimer !== null) {
+        clearInterval(orderStatusTimer);
+    }
+});
+
+renderCart();
+</script>
+
+</body>
+</html>

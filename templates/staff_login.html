@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Canteen | Staff Sign In</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      padding: 20px; background: #f4f8f4; color: #24352a;
+      font-family: Arial, sans-serif;
+    }
+    .card {
+      width: min(420px, 100%); background: #fff; padding: 30px;
+      border-radius: 16px; box-shadow: 0 8px 28px #173b2414;
+    }
+    h1 { margin: 0 0 8px; color: #176b3a; }
+    p { color: #647368; line-height: 1.5; }
+    label { display: block; margin: 18px 0 7px; font-weight: 700; }
+    input {
+      width: 100%; padding: 13px; border: 1px solid #cbd9ce;
+      border-radius: 8px; font: inherit;
+    }
+    button {
+      width: 100%; margin-top: 22px; padding: 13px; border: 0;
+      border-radius: 8px; background: #176b3a; color: white;
+      font-weight: 700; font-size: 16px; cursor: pointer;
+    }
+    button:hover { background: #10552d; }
+    .error {
+      margin-top: 16px; padding: 12px; border-radius: 8px;
+      color: #a21f1f; background: #fff0f0;
+    }
+    .note { font-size: 13px; margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Staff Sign In</h1>
+    <p>Smart Canteen staff access. Use the username and password provided by the project owner.</p>
+    <form method="post" action="{{ url_for('staff_login_page') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="username">Staff username</label>
+      <input id="username" name="username" type="text" maxlength="40"
+             autocomplete="username" required autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password"
+             autocomplete="current-password" required>
+      <button type="submit">Sign In</button>
+    </form>
+    {% if error %}
+      <div class="error" role="alert">{{ error }}</div>
+    {% endif %}
+    <p class="note">This area is for authorized canteen staff only.</p>
+  </main>
+</body>
+</html>

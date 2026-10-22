@@ -1,0 +1,1003 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Canteen | Admin Dashboard</title>
+
+    <script src="https://unpkg.com/html5-qrcode"></script>
+
+    <style>
+        :root {
+            --green: #176b3a;
+            --green-dark: #104d2a;
+            --green-light: #eaf5ed;
+            --background: #f4f7f4;
+            --white: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --border: #e1e8e2;
+            --red: #b42318;
+            --orange: #b45309;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            background: var(--background);
+            color: var(--text);
+        }
+
+        header {
+            background: var(--green);
+            color: white;
+            padding: 22px 5%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 25px;
+        }
+
+        header p {
+            margin: 6px 0 0;
+            color: #e0f2e5;
+            font-size: 14px;
+        }
+
+        .header-tag {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 9px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+        }
+
+        main {
+            width: min(1200px, 92%);
+            margin: 28px auto;
+        }
+
+        .section-heading {
+            margin: 0 0 18px;
+            font-size: 22px;
+        }
+
+        .analytics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 18px;
+            margin-bottom: 28px;
+        }
+
+        .stat-card {
+            background: var(--white);
+            padding: 22px;
+            border-radius: 14px;
+            border: 1px solid var(--border);
+            box-shadow: 0 3px 12px rgba(0, 0, 0, 0.035);
+        }
+
+        .stat-label {
+            color: var(--muted);
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+
+        .stat-value {
+            font-size: 30px;
+            font-weight: 700;
+            color: var(--green);
+            overflow-wrap: anywhere;
+        }
+
+        .panel {
+            background: var(--white);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 22px;
+            margin-bottom: 26px;
+            box-shadow: 0 3px 12px rgba(0, 0, 0, 0.035);
+        }
+
+        .panel h2 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            font-size: 21px;
+        }
+
+        .description {
+            color: var(--muted);
+            line-height: 1.5;
+            font-size: 14px;
+        }
+
+        .scanner-layout {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 24px;
+            margin-top: 20px;
+        }
+
+        .scanner-box {
+            min-width: 0;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 18px;
+            background: #fbfdfb;
+        }
+
+        .scanner-box h3 {
+            margin-top: 0;
+            font-size: 17px;
+        }
+
+        #qr-reader {
+            width: 100%;
+            max-width: 450px;
+            margin: 12px auto;
+        }
+
+        #qr-reader video {
+            border-radius: 8px;
+        }
+
+        #qr-reader button,
+        #qr-reader select {
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        .upload-input {
+            display: block;
+            width: 100%;
+            margin: 18px 0;
+            padding: 12px;
+            border: 1px dashed #9bb9a2;
+            border-radius: 9px;
+            background: white;
+        }
+
+        .primary-button {
+            display: inline-block;
+            padding: 11px 16px;
+            border: 0;
+            border-radius: 8px;
+            background: var(--green);
+            color: white;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .primary-button:hover {
+            background: var(--green-dark);
+        }
+
+        .primary-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .scan-result {
+            margin-top: 14px;
+            padding: 12px;
+            border-radius: 8px;
+            background: var(--green-light);
+            color: var(--green-dark);
+            overflow-wrap: anywhere;
+            line-height: 1.5;
+            font-size: 14px;
+        }
+
+        .scan-result.error {
+            background: #fff0ef;
+            color: var(--red);
+        }
+
+        .scan-result.warning {
+            background: #fff7e6;
+            color: var(--orange);
+        }
+
+        /* Manual six-digit pickup-code verification */
+        .pickup-code-form {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .pickup-code-form input {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            border: 1px solid #d1d9d2;
+            border-radius: 8px;
+            font-size: 18px;
+            letter-spacing: 4px;
+        }
+
+        .pickup-code-form input:focus {
+            outline: 2px solid #9bb9a2;
+            outline-offset: 2px;
+        }
+
+        .hidden-reader {
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            position: absolute;
+            left: -10000px;
+        }
+
+        .filters {
+            display: grid;
+            grid-template-columns: minmax(180px, 2fr) repeat(2, minmax(140px, 1fr));
+            gap: 12px;
+            margin: 20px 0;
+        }
+
+        .filters input,
+        .filters select {
+            width: 100%;
+            padding: 11px;
+            border: 1px solid #d1d9d2;
+            border-radius: 8px;
+            background: white;
+            font-size: 14px;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+            width: 100%;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 720px;
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 14px 12px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+            font-size: 14px;
+        }
+
+        th {
+            background: #f6f9f6;
+            color: #374151;
+            font-size: 13px;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: capitalize;
+            white-space: nowrap;
+        }
+
+        .status-successful,
+        .status-success,
+        .status-completed {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-pending {
+            background: #fff0c2;
+            color: #854d0e;
+        }
+
+        .status-cancelled,
+        .status-failed {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--muted);
+            padding: 30px;
+        }
+
+        .footer-note {
+            text-align: center;
+            color: var(--muted);
+            font-size: 12px;
+            margin: 24px 0;
+        }
+
+        @media (max-width: 760px) {
+            header {
+                padding: 20px 4%;
+            }
+
+            header h1 {
+                font-size: 21px;
+            }
+
+            main {
+                width: 94%;
+                margin: 20px auto;
+            }
+
+            .analytics {
+                grid-template-columns: 1fr;
+                gap: 12px;
+            }
+
+            .stat-card {
+                padding: 18px;
+            }
+
+            .stat-value {
+                font-size: 26px;
+            }
+
+            .scanner-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .filters {
+                grid-template-columns: 1fr;
+            }
+
+            .panel {
+                padding: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <div>
+        <h1>Smart Canteen</h1>
+        <p>Admin Dashboard · Order Management</p>
+    </div>
+    <div class="header-tag">Staff Panel</div>
+</header>
+
+<main>
+
+    <!-- ANALYTICS -->
+    <section>
+        <h2 class="section-heading">Today's Overview</h2>
+
+        <div class="analytics">
+            <div class="stat-card">
+                <div class="stat-label">Orders Today</div>
+                <div class="stat-value">{{ today_orders | default(0) }}</div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-label">Sales Today</div>
+                <div class="stat-value">
+                    ₹{{ "%.2f"|format(today_sales | default(0) | float) }}
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-label">Items Sold Today</div>
+                <div class="stat-value">{{ items_sold_today | default(0) }}</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- QR VERIFICATION -->
+    <section class="panel">
+        <h2>Verify Student Order</h2>
+        <p class="description">
+            Scan the QR code displayed by the student or upload a screenshot
+            of the order QR code. Only hand over the food after successful
+            server verification.
+        </p>
+
+        <div class="scanner-layout">
+
+            <!-- CAMERA SCANNER -->
+            <div class="scanner-box">
+                <h3>Scan with Camera</h3>
+                <p class="description">
+                    Allow camera access and position the student's QR code
+                    inside the scanner.
+                </p>
+
+                <div id="qr-reader"></div>
+
+                <p id="scan-result"
+                   class="scan-result"
+                   role="status"
+                   aria-live="polite">
+                    Scanner ready. Allow camera access to begin.
+                </p>
+            </div>
+
+            <!-- IMAGE UPLOAD SCANNER -->
+            <div class="scanner-box">
+                <h3>Upload QR Screenshot</h3>
+                <p class="description">
+                    Choose a clear image containing the student's order QR.
+                    PNG and JPEG screenshots are supported.
+                </p>
+
+                <input
+                    type="file"
+                    id="qr-image-upload"
+                    class="upload-input"
+                    accept="image/*"
+                    aria-label="Upload order QR screenshot"
+                >
+
+                <button
+                    type="button"
+                    id="upload-scan-button"
+                    class="primary-button">
+                    Read and Verify QR
+                </button>
+
+                <p id="qr-upload-message"
+                   class="scan-result"
+                   role="status"
+                   aria-live="polite">
+                    Ready to scan an uploaded image.
+                </p>
+
+                <div id="qr-file-reader" class="hidden-reader"></div>
+            </div>
+
+        </div>
+
+        <!-- MANUAL PICKUP-CODE VERIFICATION -->
+        <div class="scanner-box" style="margin-top: 20px;">
+            <h3>Enter 6-Digit Pickup Code</h3>
+            <p class="description">
+                If the student's QR code cannot be scanned, enter the six-digit
+                numeric pickup code shown on their confirmation page.
+            </p>
+
+            <form id="pickup-code-form" class="pickup-code-form">
+                <input
+                    type="text"
+                    id="pickup-code-input"
+                    inputmode="numeric"
+                    pattern="[0-9]{6}"
+                    minlength="6"
+                    maxlength="6"
+                    autocomplete="off"
+                    placeholder="e.g. 004281"
+                    aria-label="Six-digit pickup code"
+                    required
+                >
+                <button type="submit" id="verify-pickup-code-button"
+                        class="primary-button">
+                    Verify Pickup Code
+                </button>
+            </form>
+
+            <p id="pickup-code-result"
+               class="scan-result"
+               role="status"
+               aria-live="polite">
+                Enter the student's code to verify their order.
+            </p>
+        </div>
+    </section>
+
+    <!-- ORDER MANAGEMENT -->
+    <section class="panel">
+        <h2>All Orders</h2>
+        <p class="description">
+            Search orders, filter by date, and check their current status.
+        </p>
+
+        <div class="filters">
+            <input
+                type="search"
+                id="order-search"
+                placeholder="Search order ID or status..."
+                aria-label="Search orders"
+            >
+
+            <input
+                type="date"
+                id="date-filter"
+                aria-label="Filter orders by date"
+            >
+
+            <select id="status-filter" aria-label="Filter by order status">
+                <option value="">All statuses</option>
+                <option value="pending">Pending</option>
+                <option value="successful">Successful</option>
+
+            </select>
+        </div>
+
+        <div class="table-wrap">
+            <table id="orders-table">
+                <thead>
+                    <tr>
+                        <th>Order ID</th>
+                        <th>Items</th>
+                        <th>Total</th>
+                        <th>Status</th>
+                        <th>Order Time</th>
+                    </tr>
+                </thead>
+
+                <tbody id="orders-table-body">
+                    {% for order in orders %}
+                    <tr
+                        class="order-row"
+                        data-order-id="{{ order['id'] }}"
+                        data-status="{{ order['status'] | default('pending') | lower }}"
+                        data-date="{{ order['created_at'] | default('') }}">
+
+                        <td>
+                            <strong>#{{ order['id'] }}</strong>
+                        </td>
+
+                        <td>
+                            {% set items = order_items_by_id.get(order['id'], []) %}
+                            {% if items %}
+                                {% for item in items %}
+                                    <div>
+                                        {{ item['item_name'] if item['item_name'] is defined else (item['name'] if item['name'] is defined else 'Menu item') }}
+                                        × {{ item['quantity'] if item['quantity'] is defined else 1 }}
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <span class="description">No item details</span>
+                            {% endif %}
+                        </td>
+
+                        <td>
+                            ₹{{ "%.2f"|format(order['total'] | default(0) | float) }}
+                        </td>
+
+                        <td>
+                            {% set current_status = order['status'] | default('pending') | lower %}
+                            <span class="status status-{{ current_status }}">
+                                {{ current_status }}
+                            </span>
+                        </td>
+
+                        <td>
+                            {{ order['created_at'] | default('—') }}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" class="empty-state">
+                            No orders found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <p id="no-filter-results" class="empty-state" hidden>
+            No orders match your search or filters.
+        </p>
+    </section>
+
+    <p class="footer-note">
+        Smart Canteen · Admin Dashboard
+    </p>
+
+</main>
+
+<script>
+    // Shared scanner state prevents accidental duplicate requests.
+    let scannerBusy = false;
+    let lastScannedText = "";
+    let lastScannedAt = 0;
+
+    const scanResult = document.getElementById("scan-result");
+    const qrImageInput = document.getElementById("qr-image-upload");
+    const qrUploadMessage = document.getElementById("qr-upload-message");
+    const uploadScanButton = document.getElementById("upload-scan-button");
+
+    function setMessage(element, message, type = "success") {
+        element.textContent = message;
+        element.classList.remove("error", "warning");
+
+        if (type === "error") {
+            element.classList.add("error");
+        } else if (type === "warning") {
+            element.classList.add("warning");
+        }
+    }
+
+    // Send the decoded QR token to the existing Flask verification endpoint.
+    async function verifyQrToken(decodedText, messageElement) {
+        const token = (decodedText || "").trim();
+
+        if (!token) {
+            setMessage(messageElement, "The QR code is empty.", "error");
+            return;
+        }
+
+        if (scannerBusy) {
+            setMessage(
+                messageElement,
+                "A verification is already in progress.",
+                "warning"
+            );
+            return;
+        }
+
+        const now = Date.now();
+
+        if (
+            token === lastScannedText &&
+            now - lastScannedAt < 3000
+        ) {
+            return;
+        }
+
+        scannerBusy = true;
+        lastScannedText = token;
+        lastScannedAt = now;
+
+        setMessage(messageElement, "Checking QR code...", "warning");
+
+        try {
+            const response = await fetch("/api/orders/verify", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                // Keep this key consistent with the existing camera flow.
+                body: JSON.stringify({
+                    qr_token: token
+                })
+            });
+
+            let result;
+
+            try {
+                result = await response.json();
+            } catch {
+                throw new Error(
+                    "The server returned an unreadable response."
+                );
+            }
+
+            if (!response.ok) {
+                const errorMessage =
+                    result.error ||
+                    result.message ||
+                    (
+                        response.status === 409
+                            ? "This order has already been processed."
+                            : "QR verification failed."
+                    );
+
+                setMessage(messageElement, errorMessage, "error");
+                return;
+            }
+
+            const orderId =
+                result.order_id !== undefined
+                    ? result.order_id
+                    : "verified";
+
+            setMessage(
+                messageElement,
+                `Verified successfully! Order #${orderId}. You may hand over the food.`,
+                "success"
+            );
+
+            // Reload the dashboard so the order status is refreshed.
+            setTimeout(() => {
+                window.location.reload();
+            }, 1800);
+
+        } catch (error) {
+            console.error("QR verification error:", error);
+
+            setMessage(
+                messageElement,
+                error.message ||
+                    "Could not contact the server. Check the connection.",
+                "error"
+            );
+
+        } finally {
+            setTimeout(() => {
+                scannerBusy = false;
+            }, 2000);
+        }
+    }
+
+    // Verify a student's six-digit numeric pickup code.
+    const pickupCodeForm = document.getElementById("pickup-code-form");
+    const pickupCodeInput = document.getElementById("pickup-code-input");
+    const pickupCodeResult = document.getElementById("pickup-code-result");
+    const verifyPickupCodeButton = document.getElementById("verify-pickup-code-button");
+
+    // Allow digits only while preserving leading zeroes.
+    pickupCodeInput.addEventListener("input", function () {
+        pickupCodeInput.value = pickupCodeInput.value.replace(/\D/g, "").slice(0, 6);
+    });
+
+    pickupCodeForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+
+        const pickupCode = pickupCodeInput.value.trim();
+
+        if (!/^\d{6}$/.test(pickupCode)) {
+            setMessage(
+                pickupCodeResult,
+                "Enter a valid six-digit numeric pickup code.",
+                "error"
+            );
+            return;
+        }
+
+        if (scannerBusy) {
+            setMessage(
+                pickupCodeResult,
+                "Another verification is already in progress. Please wait.",
+                "warning"
+            );
+            return;
+        }
+
+        scannerBusy = true;
+        verifyPickupCodeButton.disabled = true;
+        setMessage(pickupCodeResult, "Verifying pickup code...", "warning");
+
+        try {
+            const response = await fetch("/api/orders/verify-code", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    pickup_code: pickupCode
+                })
+            });
+
+            let result;
+
+            try {
+                result = await response.json();
+            } catch {
+                throw new Error("The server returned an unreadable response.");
+            }
+
+            if (!response.ok) {
+                setMessage(
+                    pickupCodeResult,
+                    result.error || result.message || "Pickup-code verification failed.",
+                    "error"
+                );
+                return;
+            }
+
+            const orderId =
+                result.order_id !== undefined ? result.order_id : "verified";
+
+            setMessage(
+                pickupCodeResult,
+                `Pickup code verified successfully! Order #${orderId}. You may hand over the food.`,
+                "success"
+            );
+
+            pickupCodeInput.value = "";
+
+            // Refresh the dashboard to show the updated order status.
+            setTimeout(function () {
+                window.location.reload();
+            }, 1800);
+
+        } catch (error) {
+            console.error("Pickup-code verification error:", error);
+
+            setMessage(
+                pickupCodeResult,
+                error.message || "Could not contact the server. Check the connection.",
+                "error"
+            );
+        } finally {
+            setTimeout(function () {
+                scannerBusy = false;
+                verifyPickupCodeButton.disabled = false;
+            }, 1800);
+        }
+    });
+
+    // Initialize the live camera scanner.
+    if (typeof Html5QrcodeScanner !== "undefined") {
+        const scanner = new Html5QrcodeScanner(
+            "qr-reader",
+            {
+                fps: 10,
+                qrbox: {
+                    width: 220,
+                    height: 220
+                },
+                rememberLastUsedCamera: true
+            },
+            false
+        );
+
+        scanner.render(
+            decodedText => {
+                verifyQrToken(decodedText, scanResult);
+            },
+            () => {
+                // Normal camera frames often contain no QR code.
+            }
+        );
+
+    } else {
+        setMessage(
+            scanResult,
+            "The QR scanner library could not load. Check your internet connection.",
+            "error"
+        );
+    }
+
+    // Decode a QR code from an uploaded image.
+    uploadScanButton.addEventListener("click", async function () {
+        const file = qrImageInput.files && qrImageInput.files[0];
+
+        if (!file) {
+            setMessage(
+                qrUploadMessage,
+                "Choose a QR screenshot first.",
+                "warning"
+            );
+            return;
+        }
+
+        if (!file.type.startsWith("image/")) {
+            setMessage(
+                qrUploadMessage,
+                "Please select a valid image file.",
+                "error"
+            );
+            return;
+        }
+
+        if (typeof Html5Qrcode === "undefined") {
+            setMessage(
+                qrUploadMessage,
+                "The QR decoding library could not load. Check your internet connection.",
+                "error"
+            );
+            return;
+        }
+
+        let decoder = null;
+        uploadScanButton.disabled = true;
+
+        setMessage(
+            qrUploadMessage,
+            "Reading QR screenshot...",
+            "warning"
+        );
+
+        try {
+            decoder = new Html5Qrcode("qr-file-reader");
+
+            // The true option asks the library to show its decoded result.
+            const decodedText = await decoder.scanFile(file, true);
+
+            if (!decodedText || !decodedText.trim()) {
+                throw new Error(
+                    "No QR code detected. Try a clearer screenshot with the entire QR visible."
+                );
+            }
+
+            setMessage(
+                qrUploadMessage,
+                "QR detected. Verifying the order...",
+                "warning"
+            );
+
+            await verifyQrToken(decodedText, qrUploadMessage);
+
+        } catch (error) {
+            console.error("QR screenshot decoding error:", error);
+
+            setMessage(
+                qrUploadMessage,
+                error.message ||
+                    "Could not read this image. Try a clearer QR screenshot.",
+                "error"
+            );
+
+        } finally {
+            if (decoder) {
+                try {
+                    await decoder.clear();
+                } catch (cleanupError) {
+                    console.warn(
+                        "QR decoder cleanup:",
+                        cleanupError
+                    );
+                }
+            }
+
+            uploadScanButton.disabled = false;
+        }
+    });
+
+    // Search and filter the visible orders without changing database records.
+    const orderSearch = document.getElementById("order-search");
+    const dateFilter = document.getElementById("date-filter");
+    const statusFilter = document.getElementById("status-filter");
+    const orderRows = Array.from(
+        document.querySelectorAll("#orders-table-body .order-row")
+    );
+    const noFilterResults = document.getElementById("no-filter-results");
+
+    function filterOrders() {
+        const searchTerm = orderSearch.value.trim().toLowerCase();
+        const selectedDate = dateFilter.value;
+        const selectedStatus = statusFilter.value.toLowerCase();
+
+        let visibleCount = 0;
+
+        orderRows.forEach(row => {
+            const orderId = (row.dataset.orderId || "").toLowerCase();
+            const status = (row.dataset.status || "").toLowerCase();
+            const rawDate = row.dataset.date || "";
+            const orderDate = rawDate.slice(0, 10);
+
+            const matchesSearch =
+                !searchTerm ||
+                orderId.includes(searchTerm) ||
+                status.includes(searchTerm);
+
+            const matchesDate =
+                !selectedDate ||
+                orderDate === selectedDate;
+
+            const matchesStatus =
+                !selectedStatus ||
+                status === selectedStatus;
+
+            const visible =
+                matchesSearch && matchesDate && matchesStatus;
+
+            row.hidden = !visible;
+
+            if (visible) {
+                visibleCount++;
+            }
+        });
+
+        noFilterResults.hidden =
+            visibleCount !== 0 || orderRows.length === 0;
+    }
+
+    orderSearch.addEventListener("input", filterOrders);
+    dateFilter.addEventListener("change", filterOrders);
+    statusFilter.addEventListener("change", filterOrders);
+</script>
+
+</body>
+</html>
