@@ -5,8 +5,6 @@ import os
 import re
 import hmac
 import hashlib
-import smtplib
-from email.message import EmailMessage
 from functools import wraps
 from pathlib import Path
 from datetime import datetime, time, timedelta
@@ -176,7 +174,7 @@ def is_booking_open():
     """Accept afternoon orders from 11:45 AM until 12:35 PM Indian time."""
     current_time = datetime.now(INDIA_TZ).time()
     opening_time = time(11, 45)
-    closing_time = time(23, 55)
+    closing_time = time(12, 35)
     return opening_time <= current_time < closing_time
 
 
@@ -240,49 +238,64 @@ def otp_digest(email, purpose, otp):
     return hmac.new(key, value, hashlib.sha256).hexdigest()
 
 
-def send_email_otp(email, otp, purpose):
-    host = os.environ.get("SMTP_HOST", "").strip()
-    username = os.environ.get("SMTP_USERNAME", "").strip()
-    password = os.environ.get("SMTP_PASSWORD", "")
-    sender = os.environ.get("SMTP_FROM", username).strip()
-    port = int(os.environ.get("SMTP_PORT", "587"))
 
-    if not host or not sender:
-        raise RuntimeError(
-            "Email delivery is not configured yet. Set SMTP_HOST, SMTP_USERNAME, "
-            "SMTP_PASSWORD, and SMTP_FROM in your environment."
-        )
+def send_email_otp(email, otp, purpose):
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sender = os.environ.get(
+        "RESEND_FROM", "onboarding@resend.dev"
+    ).strip()
+
+    if not api_key:
+        raise RuntimeError("RESEND_API_KEY is not configured.")
 
     action = (
         "create your Smart Canteen account"
         if purpose == "register"
         else "reset your Smart Canteen password"
     )
-    message = EmailMessage()
-    message["Subject"] = "Your Smart Canteen verification code"
-    message["From"] = sender
-    message["To"] = email
-    message.set_content(
-        f"Your OTP to {action} is: {otp}\n\n"
-        f"This code expires in 5 minutes and can be used only once.\n"
-        "If you did not request this code, you can ignore this email."
+
+    payload = {
+        "from": sender,
+        "to": [email],
+        "subject": "Your Smart Canteen verification code",
+        "text": (
+            f"Your OTP to {action} is: {otp}\n\n"
+            "This code expires in 5 minutes and can be used only once.\n"
+            "If you did not request this code, ignore this email."
+        ),
+    }
+
+    request = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
     )
 
-    if port == 465:
-        with smtplib.SMTP_SSL(host, port, timeout=15) as server:
-            if username:
-                server.login(username, password)
-            server.send_message(message)
-    else:
-        with smtplib.SMTP(host, port, timeout=15) as server:
-            server.starttls()
-            if username:
-                server.login(username, password)
-            server.send_message(message)
-
-
-def json_error(message, status=400):
-    return jsonify({"error": message}), status
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status not in (200, 201):
+                raise RuntimeError(
+                    f"Email API returned status {response.status}."
+                )
+    except urllib.error.HTTPError as exc:
+        # Avoid logging the API key or OTP.
+        raise RuntimeError(
+            f"Email API rejected the request (HTTP {exc.code}). "
+            "Check the API key, sender verification, and recipient restrictions."
+        ) from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            "Could not connect to the email API. Check network connectivity."
+        ) from None
 
 
 # --------------------------------------------------
@@ -370,7 +383,7 @@ def request_registration_otp():
         if isinstance(exc, RuntimeError):
             return json_error(str(exc), 503)
         return json_error(
-            "Could not send the email. Check your SMTP settings and try again.", 503
+            "Could not send the email. Check the Resend API settings and sender verification, then try again.", 503
         )
 
     return jsonify({
