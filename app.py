@@ -31,6 +31,11 @@ def load_local_env():
 
 
 load_local_env()
+def json_error(message, status=400):
+    return jsonify({
+        "error": message,
+        "message": message
+    }), status
 app = Flask(__name__)
 
 csrf = CSRFProtect(app)
