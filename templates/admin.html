@@ -1000,9 +1000,23 @@
             visibleCount !== 0 || orderRows.length === 0;
     }
 
+    
     orderSearch.addEventListener("input", filterOrders);
     dateFilter.addEventListener("change", filterOrders);
     statusFilter.addEventListener("change", filterOrders);
+
+    // Show today's orders by default
+    const today = new Date();
+
+    const localToday = [
+        today.getFullYear(),
+        String(today.getMonth() + 1).padStart(2, "0"),
+        String(today.getDate()).padStart(2, "0")
+    ].join("-");
+
+    dateFilter.value = localToday;
+    filterOrders();
+
 </script>
 
 </body>
