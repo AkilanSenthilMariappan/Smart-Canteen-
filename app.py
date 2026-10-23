@@ -281,6 +281,7 @@ def send_email_otp(email, otp, purpose):
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "SmartCanteen/1.0",
         },
         method="POST",
     )
