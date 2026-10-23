@@ -291,16 +291,24 @@ def send_email_otp(email, otp, purpose):
                 raise RuntimeError(
                     f"Email API returned status {response.status}."
                 )
+
     except urllib.error.HTTPError as exc:
-        # Avoid logging the API key or OTP.
+        # Read Resend's error response without exposing the API key or OTP.
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            error_body = "Could not read error response"
+
+        print(f"Resend API error (HTTP {exc.code}): {error_body[:1000]}")
         raise RuntimeError(
             f"Email API rejected the request (HTTP {exc.code}). "
-            "Check the API key, sender verification, and recipient restrictions."
+            "Check the server logs for the Resend error details."
         ) from None
     except urllib.error.URLError as exc:
         raise RuntimeError(
             "Could not connect to the email API. Check network connectivity."
         ) from None
+
 
 
 # --------------------------------------------------
