@@ -179,7 +179,7 @@ def is_booking_open():
     """Accept afternoon orders from 11:45 AM until 12:35 PM Indian time."""
     current_time = datetime.now(INDIA_TZ).time()
     opening_time = time(11, 45)
-    closing_time = time(12, 35)
+    closing_time = time(23, 35)
     return opening_time <= current_time < closing_time
 
 
@@ -300,7 +300,15 @@ def send_email_otp(email, otp, purpose):
         except Exception:
             error_body = "Could not read error response"
 
-        print(f"Resend API error (HTTP {exc.code}): {error_body[:1000]}")
+        # Log provider diagnostics for the developer, but never log the API key or OTP.
+        app.logger.error("Resend API error (HTTP %s): %s", exc.code, error_body[:1000])
+        if exc.code == 403:
+            raise RuntimeError(
+                "Resend rejected the email (HTTP 403). The testing sender "
+                "onboarding@resend.dev can only send to the Resend account owner's "
+                "email until you verify a domain and set RESEND_FROM to an address "
+                "on that verified domain. Check the server log for Resend's details."
+            ) from None
         raise RuntimeError(
             f"Email API rejected the request (HTTP {exc.code}). "
             "Check the server logs for the Resend error details."
@@ -1070,4 +1078,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "set-staff":
         set_staff_account()
     else:
-        app.run(host="0.0.0.0", port=5000, debug=True)
+        app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=os.environ.get("FLASK_DEBUG", "0") == "1")
