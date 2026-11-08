@@ -1070,8 +1070,36 @@ def set_staff_account():
     print("Staff account saved. Keep the password private.")
 
 
+def sync_staff_account_from_env():
+    """Set the demo staff account from protected environment variables."""
+    username = os.environ.get("STAFF_BOOTSTRAP_USERNAME", "").strip()
+    password = os.environ.get("STAFF_BOOTSTRAP_PASSWORD", "")
+
+    if not username and not password:
+        return
+
+    if not username or not password:
+        raise RuntimeError("Both staff bootstrap variables are required.")
+
+    if len(username) > 40 or len(password) < 8 or len(password) > 128:
+        raise RuntimeError("Invalid staff bootstrap credentials.")
+
+    password_hash = generate_password_hash(password)
+
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute("""
+            INSERT INTO staff_users
+                (id, username, password_hash, updated_at)
+            VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                username = excluded.username,
+                password_hash = excluded.password_hash,
+                updated_at = CURRENT_TIMESTAMP
+        """, (username, password_hash))
+
 # Create/upgrade tables in-place. Do not delete canteen.db.
 init_database()
+sync_staff_account_from_env()
 
 
 if __name__ == "__main__":
