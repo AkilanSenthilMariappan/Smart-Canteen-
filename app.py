@@ -1163,7 +1163,7 @@ with sqlite3.connect(DATABASE) as conn:
         "PRAGMA table_info(orders)"
     ).fetchall()
 
-    print("ORDERS TABLE COLUMNS:")
+    print("DATABASE COLUMNS:", repr([column[1] for column in columns]), flush=True)
     print([column[1] for column in columns])
 
 # Initialize staff account
