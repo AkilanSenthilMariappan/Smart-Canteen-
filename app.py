@@ -13,6 +13,7 @@ import sys
 from getpass import getpass
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf.csrf import CSRFProtect, generate_csrf
+import razorpay
 
 
 def load_local_env():
@@ -816,17 +817,29 @@ def create_order():
             )
         }), 403
 
+    # Get Razorpay credentials from environment
+    key_id = os.getenv("RAZORPAY_KEY_ID")
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+
+    if not key_id or not key_secret:
+        return jsonify({
+            "error": "Payment gateway is not configured."
+        }), 503
+
     data = request.get_json(silent=True)
+
     if not isinstance(data, dict):
         return jsonify({"error": "Invalid order data."}), 400
 
     items = data.get("items")
+
     if not isinstance(items, list) or not items:
         return jsonify({"error": "Your cart is empty."}), 400
 
     validated_items = []
     seen_ids = set()
     total = 0
+
     menu_by_id = {item["id"]: item for item in menu_items}
 
     for entry in items:
@@ -835,12 +848,14 @@ def create_order():
 
         item_id = entry.get("id")
         quantity = entry.get("quantity")
+
         if (
             isinstance(item_id, bool)
             or not isinstance(item_id, int)
             or item_id not in menu_by_id
         ):
             return jsonify({"error": "Invalid menu item."}), 400
+
         if (
             isinstance(quantity, bool)
             or not isinstance(quantity, int)
@@ -848,15 +863,21 @@ def create_order():
             or quantity > 50
         ):
             return jsonify({"error": "Invalid item quantity."}), 400
+
         if item_id in seen_ids:
             return jsonify({"error": "Duplicate menu item."}), 400
 
         seen_ids.add(item_id)
+
         menu_item = menu_by_id[item_id]
+
         if not menu_item["available"]:
-            return jsonify({"error": f'{menu_item["name"]} is unavailable.'}), 400
+            return jsonify({
+                "error": f'{menu_item["name"]} is unavailable.'
+            }), 400
 
         total += menu_item["price"] * quantity
+
         validated_items.append({
             "id": item_id,
             "name": menu_item["name"],
@@ -864,45 +885,84 @@ def create_order():
             "quantity": quantity,
         })
 
-    qr_token = secrets.token_urlsafe(32)
+    if total <= 0:
+        return jsonify({"error": "Invalid order amount."}), 400
+
     try:
+        # Save the unpaid order first
         with sqlite3.connect(DATABASE, timeout=10) as connection:
-            pickup_code = generate_pickup_code(connection)
             cursor = connection.execute("""
-                INSERT INTO orders (total, status, qr_token, pickup_code, student_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO orders
+                    (total, status, student_id, payment_status)
+                VALUES (?, ?, ?, ?)
             """, (
-                total, "pending", qr_token, pickup_code, session["student_id"]
+                total,
+                "pending",
+                session["student_id"],
+                "unpaid"
             ))
+
             order_id = cursor.lastrowid
 
             for item in validated_items:
                 connection.execute("""
                     INSERT INTO order_items
-                        (order_id, menu_item_id, item_name, unit_price, quantity)
+                        (order_id, menu_item_id, item_name,
+                         unit_price, quantity)
                     VALUES (?, ?, ?, ?, ?)
                 """, (
-                    order_id, item["id"], item["name"],
-                    item["price"], item["quantity"]
+                    order_id,
+                    item["id"],
+                    item["name"],
+                    item["price"],
+                    item["quantity"]
                 ))
+
+        # Convert rupees to paise
+        amount_in_paise = total * 100
+
+        # Create Razorpay order
+        client = razorpay.Client(
+            auth=(key_id, key_secret)
+        )
+
+        razorpay_order = client.order.create(data={
+            "amount": amount_in_paise,
+            "currency": "INR",
+            "receipt": f"canteen_{order_id}"
+        })
+
+        razorpay_order_id = razorpay_order["id"]
+
+        # Save Razorpay order ID
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.execute("""
+                UPDATE orders
+                SET razorpay_order_id = ?
+                WHERE id = ?
+            """, (razorpay_order_id, order_id))
 
         return jsonify({
             "order_id": order_id,
             "total": total,
-            "status": "pending",
-            "qr_token": qr_token,
-            "pickup_code": pickup_code,
-            "items": validated_items,
+            "amount": amount_in_paise,
+            "currency": "INR",
+            "key_id": key_id,
+            "razorpay_order_id": razorpay_order_id,
+            "items": validated_items
         }), 201
 
-    except sqlite3.Error:
-        app.logger.exception("Could not save the canteen order.")
-        return jsonify({"error": "Could not save your order. Please try again."}), 500
-    except RuntimeError:
-        app.logger.exception("Could not generate a unique pickup code.")
-        return jsonify({"error": "Could not generate a pickup code. Please try again."}), 500
+    except Exception:
+        app.logger.exception(
+            "Razorpay order creation failed."
+        )
 
-
+        return jsonify({
+            "error": (
+                "Could not initialize payment. "
+                "Please try again."
+            )
+        }), 502
 # --------------------------------------------------
 # VERIFY QR CODE / PICKUP CODE
 # --------------------------------------------------
