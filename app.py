@@ -1154,7 +1154,19 @@ def sync_staff_account_from_env():
         """, (username, password_hash))
 
 # Create/upgrade tables in-place. Do not delete canteen.db.
+# Initialize database
 init_database()
+
+# Check database columns
+with sqlite3.connect(DATABASE) as conn:
+    columns = conn.execute(
+        "PRAGMA table_info(orders)"
+    ).fetchall()
+
+    print("ORDERS TABLE COLUMNS:")
+    print([column[1] for column in columns])
+
+# Initialize staff account
 sync_staff_account_from_env()
 
 
