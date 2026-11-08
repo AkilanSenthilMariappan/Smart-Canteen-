@@ -86,8 +86,9 @@ menu_items = [
 # DATABASE INITIALIZATION
 # --------------------------------------------------
 
+
 def init_database():
-    """Create tables and safely upgrade the existing database without deleting data."""
+    """Create tables and safely upgrade the existing database."""
     with sqlite3.connect(DATABASE) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS students (
@@ -98,6 +99,7 @@ def init_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS staff_users (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -106,6 +108,7 @@ def init_database():
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS email_otps (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +120,7 @@ def init_database():
                 created_at TEXT NOT NULL
             )
         """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,6 +129,7 @@ def init_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS order_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,23 +142,74 @@ def init_database():
             )
         """)
 
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
-        if "student_id" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN student_id INTEGER REFERENCES students(id)")
-        if "qr_token" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN qr_token TEXT")
-        if "pickup_code" not in columns:
-            conn.execute("ALTER TABLE orders ADD COLUMN pickup_code TEXT")
+        # Read existing order columns.
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(orders)"
+            ).fetchall()
+        }
 
+        # Preserve existing order data and add missing columns.
+        migrations = {
+            "student_id": (
+                "ALTER TABLE orders ADD COLUMN "
+                "student_id INTEGER REFERENCES students(id)"
+            ),
+            "qr_token": (
+                "ALTER TABLE orders ADD COLUMN qr_token TEXT"
+            ),
+            "pickup_code": (
+                "ALTER TABLE orders ADD COLUMN pickup_code TEXT"
+            ),
+            "payment_status": (
+                "ALTER TABLE orders ADD COLUMN "
+                "payment_status TEXT NOT NULL DEFAULT 'unpaid'"
+            ),
+            "razorpay_order_id": (
+                "ALTER TABLE orders ADD COLUMN razorpay_order_id TEXT"
+            ),
+            "razorpay_payment_id": (
+                "ALTER TABLE orders ADD COLUMN razorpay_payment_id TEXT"
+            ),
+            "payment_verified_at": (
+                "ALTER TABLE orders ADD COLUMN payment_verified_at TEXT"
+            ),
+        }
+
+        for column, sql in migrations.items():
+            if column not in columns:
+                conn.execute(sql)
+
+        # Preserve historical collected orders.
+        conn.execute("""
+            UPDATE orders
+            SET payment_status = 'legacy'
+            WHERE status = 'successful'
+              AND payment_status = 'unpaid'
+              AND razorpay_payment_id IS NULL
+        """)
+
+        # Prevent duplicate Razorpay references.
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_qr_token
             ON orders(qr_token)
         """)
+
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_pickup_code
             ON orders(pickup_code)
         """)
 
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_razorpay_order
+            ON orders(razorpay_order_id)
+        """)
+
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_razorpay_payment
+            ON orders(razorpay_payment_id)
+        """)
 
 # --------------------------------------------------
 # PICKUP CODE
