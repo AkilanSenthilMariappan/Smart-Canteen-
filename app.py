@@ -605,6 +605,7 @@ def login_student():
             "SELECT id, email, name, password_hash FROM students WHERE email = ?",
             (email,)
         ).fetchone()
+        app.logger.info("Student account found in database: %s", student is not None)
 
     if student is None or not check_password_hash(student["password_hash"], password):
         return json_error("Email or password is incorrect.", 401)
