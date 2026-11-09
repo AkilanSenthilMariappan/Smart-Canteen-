@@ -605,9 +605,16 @@ def login_student():
             "SELECT id, email, name, password_hash FROM students WHERE email = ?",
             (email,)
         ).fetchone()
-        app.logger.warning(
-    "LOGIN DIAGNOSTIC: student_found=%s",
-    student is not None
+        password_matches = (
+            check_password_hash(student["password_hash"], password)
+        if student is not None
+        else False
+)
+
+    app.logger.warning(
+        "LOGIN DIAGNOSTIC: student_found=%s password_matches=%s",
+        student is not None,
+        password_matches
 )
 
     if student is None or not check_password_hash(student["password_hash"], password):
