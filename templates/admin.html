@@ -209,7 +209,6 @@
             color: var(--orange);
         }
 
-        /* Manual six-digit pickup-code verification */
         .pickup-code-form {
             display: flex;
             flex-wrap: wrap;
@@ -242,7 +241,7 @@
 
         .filters {
             display: grid;
-            grid-template-columns: minmax(180px, 2fr) repeat(2, minmax(140px, 1fr));
+            grid-template-columns: minmax(180px, 2fr) repeat(3, minmax(140px, 1fr));
             gap: 12px;
             margin: 20px 0;
         }
@@ -265,7 +264,7 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 720px;
+            min-width: 850px;
         }
 
         th,
@@ -295,12 +294,14 @@
 
         .status-successful,
         .status-success,
-        .status-completed {
+        .status-completed,
+        .status-paid {
             background: #dcfce7;
             color: #166534;
         }
 
-        .status-pending {
+        .status-pending,
+        .status-unpaid {
             background: #fff0c2;
             color: #854d0e;
         }
@@ -309,6 +310,11 @@
         .status-failed {
             background: #fee2e2;
             color: #991b1b;
+        }
+
+        .status-legacy {
+            background: #e5e7eb;
+            color: #374151;
         }
 
         .empty-state {
@@ -322,6 +328,12 @@
             color: var(--muted);
             font-size: 12px;
             margin: 24px 0;
+        }
+
+        @media (max-width: 900px) {
+            .filters {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
 
         @media (max-width: 760px) {
@@ -378,7 +390,6 @@
 
 <main>
 
-    <!-- ANALYTICS -->
     <section>
         <h2 class="section-heading">Today's Overview</h2>
 
@@ -402,18 +413,16 @@
         </div>
     </section>
 
-    <!-- QR VERIFICATION -->
     <section class="panel">
         <h2>Verify Student Order</h2>
         <p class="description">
             Scan the QR code displayed by the student or upload a screenshot
-            of the order QR code. Only hand over the food after successful
+            of the order QR code. Only hand over food after successful
             server verification.
         </p>
 
         <div class="scanner-layout">
 
-            <!-- CAMERA SCANNER -->
             <div class="scanner-box">
                 <h3>Scan with Camera</h3>
                 <p class="description">
@@ -431,7 +440,6 @@
                 </p>
             </div>
 
-            <!-- IMAGE UPLOAD SCANNER -->
             <div class="scanner-box">
                 <h3>Upload QR Screenshot</h3>
                 <p class="description">
@@ -466,7 +474,6 @@
 
         </div>
 
-        <!-- MANUAL PICKUP-CODE VERIFICATION -->
         <div class="scanner-box" style="margin-top: 20px;">
             <h3>Enter 6-Digit Pickup Code</h3>
             <p class="description">
@@ -487,8 +494,11 @@
                     aria-label="Six-digit pickup code"
                     required
                 >
-                <button type="submit" id="verify-pickup-code-button"
-                        class="primary-button">
+
+                <button
+                    type="submit"
+                    id="verify-pickup-code-button"
+                    class="primary-button">
                     Verify Pickup Code
                 </button>
             </form>
@@ -502,11 +512,10 @@
         </div>
     </section>
 
-    <!-- ORDER MANAGEMENT -->
     <section class="panel">
         <h2>All Orders</h2>
         <p class="description">
-            Search orders, filter by date, and check their current status.
+            Search orders, filter by date, order status and payment status.
         </p>
 
         <div class="filters">
@@ -524,10 +533,16 @@
             >
 
             <select id="status-filter" aria-label="Filter by order status">
-                <option value="">All statuses</option>
+                <option value="">All order statuses</option>
                 <option value="pending">Pending</option>
                 <option value="successful">Successful</option>
+            </select>
 
+            <select id="payment-filter" aria-label="Filter by payment status">
+                <option value="">All payment statuses</option>
+                <option value="paid">Paid</option>
+                <option value="unpaid">Unpaid</option>
+                <option value="legacy">Legacy</option>
             </select>
         </div>
 
@@ -538,17 +553,22 @@
                         <th>Order ID</th>
                         <th>Items</th>
                         <th>Total</th>
-                        <th>Status</th>
+                        <th>Order Status</th>
+                        <th>Payment Status</th>
                         <th>Order Time</th>
                     </tr>
                 </thead>
 
                 <tbody id="orders-table-body">
                     {% for order in orders %}
+                    {% set current_status = order['status'] | default('pending') | lower %}
+                    {% set payment = order['payment_status'] | default('unpaid') | lower %}
+
                     <tr
                         class="order-row"
                         data-order-id="{{ order['id'] }}"
-                        data-status="{{ order['status'] | default('pending') | lower }}"
+                        data-status="{{ current_status }}"
+                        data-payment-status="{{ payment }}"
                         data-date="{{ order['created_at'] | default('') }}">
 
                         <td>
@@ -557,11 +577,12 @@
 
                         <td>
                             {% set items = order_items_by_id.get(order['id'], []) %}
+
                             {% if items %}
                                 {% for item in items %}
                                     <div>
-                                        {{ item['item_name'] if item['item_name'] is defined else (item['name'] if item['name'] is defined else 'Menu item') }}
-                                        × {{ item['quantity'] if item['quantity'] is defined else 1 }}
+                                        {{ item['item_name'] }}
+                                        × {{ item['quantity'] }}
                                     </div>
                                 {% endfor %}
                             {% else %}
@@ -574,9 +595,14 @@
                         </td>
 
                         <td>
-                            {% set current_status = order['status'] | default('pending') | lower %}
                             <span class="status status-{{ current_status }}">
                                 {{ current_status }}
+                            </span>
+                        </td>
+
+                        <td>
+                            <span class="status status-{{ payment }}">
+                                {{ payment }}
                             </span>
                         </td>
 
@@ -584,9 +610,10 @@
                             {{ order['created_at'] | default('—') }}
                         </td>
                     </tr>
+
                     {% else %}
                     <tr>
-                        <td colspan="5" class="empty-state">
+                        <td colspan="6" class="empty-state">
                             No orders found.
                         </td>
                     </tr>
@@ -607,10 +634,9 @@
 </main>
 
 <script>
-    // Flask-WTF CSRF token for protected POST requests.
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+    const csrfToken =
+        document.querySelector('meta[name="csrf-token"]')?.content;
 
-    // Shared scanner state prevents accidental duplicate requests.
     let scannerBusy = false;
     let lastScannedText = "";
     let lastScannedAt = 0;
@@ -631,7 +657,6 @@
         }
     }
 
-    // Send the decoded QR token to the existing Flask verification endpoint.
     async function verifyQrToken(decodedText, messageElement) {
         const token = (decodedText || "").trim();
 
@@ -671,33 +696,19 @@
                     "Content-Type": "application/json",
                     "X-CSRFToken": csrfToken
                 },
-                // Keep this key consistent with the existing camera flow.
                 body: JSON.stringify({
                     qr_token: token
                 })
             });
 
-            let result;
-
-            try {
-                result = await response.json();
-            } catch {
-                throw new Error(
-                    "The server returned an unreadable response."
-                );
-            }
+            const result = await response.json();
 
             if (!response.ok) {
-                const errorMessage =
-                    result.error ||
-                    result.message ||
-                    (
-                        response.status === 409
-                            ? "This order has already been processed."
-                            : "QR verification failed."
-                    );
-
-                setMessage(messageElement, errorMessage, "error");
+                setMessage(
+                    messageElement,
+                    result.error || "QR verification failed.",
+                    "error"
+                );
                 return;
             }
 
@@ -712,7 +723,6 @@
                 "success"
             );
 
-            // Reload the dashboard so the order status is refreshed.
             setTimeout(() => {
                 window.location.reload();
             }, 1800);
@@ -722,8 +732,7 @@
 
             setMessage(
                 messageElement,
-                error.message ||
-                    "Could not contact the server. Check the connection.",
+                error.message || "Could not contact the server.",
                 "error"
             );
 
@@ -734,15 +743,15 @@
         }
     }
 
-    // Verify a student's six-digit numeric pickup code.
     const pickupCodeForm = document.getElementById("pickup-code-form");
     const pickupCodeInput = document.getElementById("pickup-code-input");
     const pickupCodeResult = document.getElementById("pickup-code-result");
-    const verifyPickupCodeButton = document.getElementById("verify-pickup-code-button");
+    const verifyPickupCodeButton =
+        document.getElementById("verify-pickup-code-button");
 
-    // Allow digits only while preserving leading zeroes.
     pickupCodeInput.addEventListener("input", function () {
-        pickupCodeInput.value = pickupCodeInput.value.replace(/\D/g, "").slice(0, 6);
+        pickupCodeInput.value =
+            pickupCodeInput.value.replace(/\D/g, "").slice(0, 6);
     });
 
     pickupCodeForm.addEventListener("submit", async function (event) {
@@ -762,7 +771,7 @@
         if (scannerBusy) {
             setMessage(
                 pickupCodeResult,
-                "Another verification is already in progress. Please wait.",
+                "Another verification is already in progress.",
                 "warning"
             );
             return;
@@ -770,7 +779,12 @@
 
         scannerBusy = true;
         verifyPickupCodeButton.disabled = true;
-        setMessage(pickupCodeResult, "Verifying pickup code...", "warning");
+
+        setMessage(
+            pickupCodeResult,
+            "Verifying pickup code...",
+            "warning"
+        );
 
         try {
             const response = await fetch("/api/orders/verify-code", {
@@ -784,18 +798,12 @@
                 })
             });
 
-            let result;
-
-            try {
-                result = await response.json();
-            } catch {
-                throw new Error("The server returned an unreadable response.");
-            }
+            const result = await response.json();
 
             if (!response.ok) {
                 setMessage(
                     pickupCodeResult,
-                    result.error || result.message || "Pickup-code verification failed.",
+                    result.error || "Pickup-code verification failed.",
                     "error"
                 );
                 return;
@@ -812,8 +820,7 @@
 
             pickupCodeInput.value = "";
 
-            // Refresh the dashboard to show the updated order status.
-            setTimeout(function () {
+            setTimeout(() => {
                 window.location.reload();
             }, 1800);
 
@@ -822,18 +829,18 @@
 
             setMessage(
                 pickupCodeResult,
-                error.message || "Could not contact the server. Check the connection.",
+                error.message || "Could not contact the server.",
                 "error"
             );
+
         } finally {
-            setTimeout(function () {
+            setTimeout(() => {
                 scannerBusy = false;
                 verifyPickupCodeButton.disabled = false;
             }, 1800);
         }
     });
 
-    // Initialize the live camera scanner.
     if (typeof Html5QrcodeScanner !== "undefined") {
         const scanner = new Html5QrcodeScanner(
             "qr-reader",
@@ -852,9 +859,7 @@
             decodedText => {
                 verifyQrToken(decodedText, scanResult);
             },
-            () => {
-                // Normal camera frames often contain no QR code.
-            }
+            () => {}
         );
 
     } else {
@@ -865,7 +870,6 @@
         );
     }
 
-    // Decode a QR code from an uploaded image.
     uploadScanButton.addEventListener("click", async function () {
         const file = qrImageInput.files && qrImageInput.files[0];
 
@@ -890,7 +894,7 @@
         if (typeof Html5Qrcode === "undefined") {
             setMessage(
                 qrUploadMessage,
-                "The QR decoding library could not load. Check your internet connection.",
+                "The QR decoding library could not load.",
                 "error"
             );
             return;
@@ -908,12 +912,11 @@
         try {
             decoder = new Html5Qrcode("qr-file-reader");
 
-            // The true option asks the library to show its decoded result.
             const decodedText = await decoder.scanFile(file, true);
 
             if (!decodedText || !decodedText.trim()) {
                 throw new Error(
-                    "No QR code detected. Try a clearer screenshot with the entire QR visible."
+                    "No QR code detected. Try a clearer screenshot."
                 );
             }
 
@@ -930,8 +933,7 @@
 
             setMessage(
                 qrUploadMessage,
-                error.message ||
-                    "Could not read this image. Try a clearer QR screenshot.",
+                error.message || "Could not read this image.",
                 "error"
             );
 
@@ -940,10 +942,7 @@
                 try {
                     await decoder.clear();
                 } catch (cleanupError) {
-                    console.warn(
-                        "QR decoder cleanup:",
-                        cleanupError
-                    );
+                    console.warn("QR decoder cleanup:", cleanupError);
                 }
             }
 
@@ -951,43 +950,56 @@
         }
     });
 
-    // Search and filter the visible orders without changing database records.
+    // Search and filter orders.
     const orderSearch = document.getElementById("order-search");
     const dateFilter = document.getElementById("date-filter");
     const statusFilter = document.getElementById("status-filter");
+    const paymentFilter = document.getElementById("payment-filter");
+
     const orderRows = Array.from(
         document.querySelectorAll("#orders-table-body .order-row")
     );
-    const noFilterResults = document.getElementById("no-filter-results");
+
+    const noFilterResults =
+        document.getElementById("no-filter-results");
 
     function filterOrders() {
         const searchTerm = orderSearch.value.trim().toLowerCase();
         const selectedDate = dateFilter.value;
         const selectedStatus = statusFilter.value.toLowerCase();
+        const selectedPayment = paymentFilter.value.toLowerCase();
 
         let visibleCount = 0;
 
         orderRows.forEach(row => {
             const orderId = (row.dataset.orderId || "").toLowerCase();
             const status = (row.dataset.status || "").toLowerCase();
+            const paymentStatus =
+                (row.dataset.paymentStatus || "").toLowerCase();
+
             const rawDate = row.dataset.date || "";
             const orderDate = rawDate.slice(0, 10);
 
             const matchesSearch =
                 !searchTerm ||
                 orderId.includes(searchTerm) ||
-                status.includes(searchTerm);
+                status.includes(searchTerm) ||
+                paymentStatus.includes(searchTerm);
 
             const matchesDate =
-                !selectedDate ||
-                orderDate === selectedDate;
+                !selectedDate || orderDate === selectedDate;
 
             const matchesStatus =
-                !selectedStatus ||
-                status === selectedStatus;
+                !selectedStatus || status === selectedStatus;
+
+            const matchesPayment =
+                !selectedPayment || paymentStatus === selectedPayment;
 
             const visible =
-                matchesSearch && matchesDate && matchesStatus;
+                matchesSearch &&
+                matchesDate &&
+                matchesStatus &&
+                matchesPayment;
 
             row.hidden = !visible;
 
@@ -1000,12 +1012,12 @@
             visibleCount !== 0 || orderRows.length === 0;
     }
 
-    
     orderSearch.addEventListener("input", filterOrders);
     dateFilter.addEventListener("change", filterOrders);
     statusFilter.addEventListener("change", filterOrders);
+    paymentFilter.addEventListener("change", filterOrders);
 
-    // Show today's orders by default
+    // Show today's orders by default.
     const today = new Date();
 
     const localToday = [

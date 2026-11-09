@@ -748,26 +748,30 @@ def booking():
 # ADMIN DASHBOARD AND ANALYTICS
 # --------------------------------------------------
 
+
 @app.route("/admin")
 @staff_login_required
 def admin():
     today = datetime.now(INDIA_TZ).date()
 
-    with sqlite3.connect(DATABASE) as connection:
+    with sqlite3.connect(DATABASE, timeout=10) as connection:
         connection.row_factory = sqlite3.Row
+
         orders = connection.execute("""
-            SELECT id, total, status, created_at
+            SELECT id, total, status, payment_status, created_at
             FROM orders
             ORDER BY id DESC
         """).fetchall()
 
         order_items_by_id = {}
+
         for order in orders:
             items = connection.execute("""
                 SELECT item_name, unit_price, quantity
                 FROM order_items
                 WHERE order_id = ?
             """, (order["id"],)).fetchall()
+
             order_items_by_id[order["id"]] = items
 
     today_orders = 0
@@ -777,20 +781,28 @@ def admin():
     for order in orders:
         try:
             order_datetime = datetime.fromisoformat(order["created_at"])
+
             if order_datetime.tzinfo is None:
                 order_datetime = order_datetime.replace(tzinfo=UTC_TZ)
+
             order_date_india = order_datetime.astimezone(INDIA_TZ).date()
+
         except (ValueError, TypeError):
             app.logger.warning(
-                "Could not interpret created_at for order %s", order["id"]
+                "Could not interpret created_at for order %s",
+                order["id"]
             )
             continue
 
         if order_date_india == today:
             today_orders += 1
-            today_sales += order["total"]
-            for item in order_items_by_id[order["id"]]:
-                items_sold_today += item["quantity"]
+
+            # Only captured payments count as sales.
+            if order["payment_status"] == "paid":
+                today_sales += order["total"]
+
+                for item in order_items_by_id[order["id"]]:
+                    items_sold_today += item["quantity"]
 
     return render_template(
         "admin.html",
@@ -800,7 +812,6 @@ def admin():
         today_sales=today_sales,
         items_sold_today=items_sold_today,
     )
-
 
 # --------------------------------------------------
 # CREATE STUDENT ORDER
@@ -963,194 +974,518 @@ def create_order():
                 "Please try again."
             )
         }), 502
+
+
+
 # --------------------------------------------------
-# VERIFY QR CODE / PICKUP CODE
+# VERIFY RAZORPAY PAYMENT
+# --------------------------------------------------
+
+@app.route("/api/orders/verify-payment", methods=["POST"])
+@login_required
+def verify_payment():
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid payment data."}), 400
+
+    order_id = data.get("order_id")
+    razorpay_order_id = data.get("razorpay_order_id")
+    payment_id = data.get("razorpay_payment_id")
+    signature = data.get("razorpay_signature")
+
+    if (
+        isinstance(order_id, bool)
+        or not isinstance(order_id, int)
+        or not all(
+            isinstance(value, str) and value.strip()
+            for value in (razorpay_order_id, payment_id, signature)
+        )
+    ):
+        return jsonify({"error": "Invalid payment details."}), 400
+
+    key_id = os.getenv("RAZORPAY_KEY_ID")
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+
+    if not key_id or not key_secret:
+        return jsonify({
+            "error": "Payment gateway is not configured."
+        }), 503
+
+    try:
+        # 1. Verify Razorpay checkout signature.
+        message = f"{razorpay_order_id}|{payment_id}".encode()
+
+        expected_signature = hmac.new(
+            key_secret.encode(),
+            message,
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(expected_signature, signature):
+            return jsonify({
+                "error": "Payment signature is invalid."
+            }), 400
+
+        # 2. Fetch payment directly from Razorpay.
+        client = razorpay.Client(auth=(key_id, key_secret))
+        payment = client.payment.fetch(payment_id)
+
+        if (
+            payment.get("order_id") != razorpay_order_id
+            or payment.get("status") != "captured"
+        ):
+            return jsonify({
+                "error": "Payment has not been captured yet."
+            }), 400
+
+        # 3. Verify and update the database atomically.
+        response_data = None
+        response_status = 200
+
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+
+            order = connection.execute("""
+                SELECT id, total, student_id, payment_status,
+                       razorpay_order_id, qr_token, pickup_code,
+                       razorpay_payment_id
+                FROM orders
+                WHERE id = ? AND student_id = ?
+            """, (
+                order_id,
+                session["student_id"]
+            )).fetchone()
+
+            if order is None:
+                response_data = {
+                    "error": "Order not found."
+                }
+                response_status = 404
+
+            elif order["razorpay_order_id"] != razorpay_order_id:
+                response_data = {
+                    "error": "Order ID mismatch."
+                }
+                response_status = 400
+
+            elif (
+                payment.get("amount") != order["total"] * 100
+                or payment.get("currency") != "INR"
+            ):
+                response_data = {
+                    "error": "Payment amount mismatch."
+                }
+                response_status = 400
+
+            elif order["payment_status"] == "paid":
+                if order["razorpay_payment_id"] != payment_id:
+                    response_data = {
+                        "error": "This order has another payment recorded."
+                    }
+                    response_status = 409
+                else:
+                    # Idempotent response for repeated verification.
+                    response_data = {
+                        "success": True,
+                        "order_id": order_id,
+                        "qr_token": order["qr_token"],
+                        "pickup_code": order["pickup_code"]
+                    }
+
+            elif order["payment_status"] != "unpaid":
+                response_data = {
+                    "error": "Order cannot be paid."
+                }
+                response_status = 409
+
+            else:
+                # Generate collection credentials only after payment capture.
+                qr_token = secrets.token_urlsafe(32)
+                pickup_code = generate_pickup_code(connection)
+
+                cursor = connection.execute("""
+                    UPDATE orders
+                    SET payment_status = 'paid',
+                        razorpay_payment_id = ?,
+                        payment_verified_at = ?,
+                        qr_token = ?,
+                        pickup_code = ?
+                    WHERE id = ?
+                      AND student_id = ?
+                      AND payment_status = 'unpaid'
+                      AND razorpay_order_id = ?
+                """, (
+                    payment_id,
+                    datetime.now(INDIA_TZ).isoformat(),
+                    qr_token,
+                    pickup_code,
+                    order_id,
+                    session["student_id"],
+                    razorpay_order_id
+                ))
+
+                if cursor.rowcount != 1:
+                    response_data = {
+                        "error": "Order could not be updated. Please try again."
+                    }
+                    response_status = 409
+                else:
+                    response_data = {
+                        "success": True,
+                        "order_id": order_id,
+                        "qr_token": qr_token,
+                        "pickup_code": pickup_code
+                    }
+
+        return jsonify(response_data), response_status
+
+    except Exception:
+        app.logger.exception("Payment verification failed.")
+
+        return jsonify({
+            "error": "Could not verify payment. Please contact the canteen staff."
+        }), 500
+
+
+# --------------------------------------------------
+# VERIFY QR CODE
 # --------------------------------------------------
 
 @app.route("/api/orders/verify", methods=["POST"])
 @staff_login_required
 def verify_order():
     data = request.get_json(silent=True)
+
     if not isinstance(data, dict):
         return jsonify({"error": "Invalid scan data."}), 400
 
     qr_token = data.get("qr_token")
-    if not isinstance(qr_token, str) or not qr_token.strip() or len(qr_token) > 200:
+
+    if (
+        not isinstance(qr_token, str)
+        or not qr_token.strip()
+        or len(qr_token) > 200
+    ):
         return jsonify({"error": "Invalid QR code."}), 400
+
     qr_token = qr_token.strip()
 
     try:
+        response_data = None
+        response_status = 200
+
         with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.row_factory = sqlite3.Row
             connection.execute("BEGIN IMMEDIATE")
-            order = connection.execute(
-                "SELECT id, status FROM orders WHERE qr_token = ?", (qr_token,)
-            ).fetchone()
+
+            order = connection.execute("""
+                SELECT id, status, payment_status
+                FROM orders
+                WHERE qr_token = ?
+            """, (qr_token,)).fetchone()
+
             if order is None:
-                return jsonify({"error": "Invalid QR code."}), 404
+                response_data = {
+                    "error": "Invalid QR code."
+                }
+                response_status = 404
 
-            order_id, status = order
-            if status == "successful":
-                return jsonify({
+            elif order["payment_status"] != "paid":
+                response_data = {
+                    "error": "Payment has not been completed.",
+                    "payment_status": order["payment_status"]
+                }
+                response_status = 403
+
+            elif order["status"] == "successful":
+                response_data = {
                     "error": "This order has already been collected.",
-                    "order_id": order_id,
-                    "status": status
-                }), 409
-            if status != "pending":
-                return jsonify({
-                    "error": "This order cannot be collected.", "status": status
-                }), 409
+                    "order_id": order["id"],
+                    "status": order["status"]
+                }
+                response_status = 409
 
-            connection.execute(
-                "UPDATE orders SET status = 'successful' WHERE id = ? AND status = 'pending'",
-                (order_id,)
-            )
+            elif order["status"] != "pending":
+                response_data = {
+                    "error": "This order cannot be collected.",
+                    "status": order["status"]
+                }
+                response_status = 409
 
-        return jsonify({
-            "message": "QR verified. The order is ready for handover.",
-            "order_id": order_id,
-            "status": "successful"
-        }), 200
+            else:
+                cursor = connection.execute("""
+                    UPDATE orders
+                    SET status = 'successful'
+                    WHERE id = ?
+                      AND status = 'pending'
+                      AND payment_status = 'paid'
+                """, (order["id"],))
+
+                if cursor.rowcount != 1:
+                    response_data = {
+                        "error": "Order status changed. Please scan again."
+                    }
+                    response_status = 409
+                else:
+                    response_data = {
+                        "message": "QR verified. The order is ready for handover.",
+                        "order_id": order["id"],
+                        "status": "successful"
+                    }
+
+        return jsonify(response_data), response_status
+
     except sqlite3.Error:
         app.logger.exception("Could not verify the QR code.")
-        return jsonify({"error": "Verification failed. Please try again."}), 500
 
+        return jsonify({
+            "error": "Verification failed. Please try again."
+        }), 500
+
+
+# --------------------------------------------------
+# VERIFY PICKUP CODE
+# --------------------------------------------------
 
 @app.route("/api/orders/verify-code", methods=["POST"])
 @staff_login_required
 def verify_order_code():
     data = request.get_json(silent=True)
+
     if not isinstance(data, dict):
         return jsonify({"error": "Invalid verification data."}), 400
 
     pickup_code = data.get("pickup_code")
+
     if (
         not isinstance(pickup_code, str)
         or len(pickup_code) != 6
         or not pickup_code.isdigit()
     ):
-        return jsonify({"error": "Enter a valid six-digit pickup code."}), 400
+        return jsonify({
+            "error": "Enter a valid six-digit pickup code."
+        }), 400
 
     try:
+        response_data = None
+        response_status = 200
+
         with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.row_factory = sqlite3.Row
             connection.execute("BEGIN IMMEDIATE")
-            order = connection.execute(
-                "SELECT id, status FROM orders WHERE pickup_code = ?", (pickup_code,)
-            ).fetchone()
+
+            order = connection.execute("""
+                SELECT id, status, payment_status
+                FROM orders
+                WHERE pickup_code = ?
+            """, (pickup_code,)).fetchone()
+
             if order is None:
-                return jsonify({"error": "Pickup code not found."}), 404
+                response_data = {
+                    "error": "Pickup code not found."
+                }
+                response_status = 404
 
-            order_id, status = order
-            if status == "successful":
-                return jsonify({
+            elif order["payment_status"] != "paid":
+                response_data = {
+                    "error": "Payment has not been completed.",
+                    "payment_status": order["payment_status"]
+                }
+                response_status = 403
+
+            elif order["status"] == "successful":
+                response_data = {
                     "error": "This order has already been collected.",
-                    "order_id": order_id,
-                    "status": status
-                }), 409
-            if status != "pending":
-                return jsonify({
-                    "error": "This order cannot be collected.", "status": status
-                }), 409
+                    "order_id": order["id"],
+                    "status": order["status"]
+                }
+                response_status = 409
 
-            connection.execute(
-                "UPDATE orders SET status = 'successful' WHERE id = ? AND status = 'pending'",
-                (order_id,)
-            )
+            elif order["status"] != "pending":
+                response_data = {
+                    "error": "This order cannot be collected.",
+                    "status": order["status"]
+                }
+                response_status = 409
 
-        return jsonify({
-            "message": "Pickup code verified successfully.",
-            "order_id": order_id,
-            "status": "successful"
-        }), 200
+            else:
+                cursor = connection.execute("""
+                    UPDATE orders
+                    SET status = 'successful'
+                    WHERE id = ?
+                      AND status = 'pending'
+                      AND payment_status = 'paid'
+                """, (order["id"],))
+
+                if cursor.rowcount != 1:
+                    response_data = {
+                        "error": "Order status changed. Please verify again."
+                    }
+                    response_status = 409
+                else:
+                    response_data = {
+                        "message": "Pickup code verified successfully.",
+                        "order_id": order["id"],
+                        "status": "successful"
+                    }
+
+        return jsonify(response_data), response_status
+
     except sqlite3.Error:
         app.logger.exception("Pickup code verification failed.")
-        return jsonify({"error": "Verification failed. Please try again."}), 500
 
+        return jsonify({
+            "error": "Verification failed. Please try again."
+        }), 500
 
 # --------------------------------------------------
 # STUDENT ORDER HISTORY / STATUS / RECEIPT
 # --------------------------------------------------
 
+
 @app.route("/api/my-orders", methods=["GET"])
 @login_required
 def my_orders():
-    with sqlite3.connect(DATABASE) as connection:
-        connection.row_factory = sqlite3.Row
-        orders = connection.execute("""
-            SELECT id, total, status, created_at, qr_token, pickup_code
-            FROM orders WHERE student_id = ? ORDER BY id DESC
-        """, (session["student_id"],)).fetchall()
+    try:
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.row_factory = sqlite3.Row
 
-        result = []
-        for order in orders:
-            rows = connection.execute("""
-                SELECT item_name, unit_price, quantity FROM order_items
-                WHERE order_id = ? ORDER BY id
-            """, (order["id"],)).fetchall()
-            result.append({
-                "order_id": order["id"],
-                "total": order["total"],
-                "status": order["status"],
-                "created_at": order["created_at"],
-                "qr_token": order["qr_token"],
-                "pickup_code": order["pickup_code"],
-                "items": [
-                    {"name": row["item_name"], "price": row["unit_price"], "quantity": row["quantity"]}
-                    for row in rows
-                ]
-            })
-    return jsonify({"orders": result}), 200
+            orders = connection.execute("""
+                SELECT id, total, status, payment_status, created_at,
+                       qr_token, pickup_code
+                FROM orders
+                WHERE student_id = ?
+                ORDER BY id DESC
+            """, (session["student_id"],)).fetchall()
+
+            result = []
+
+            for order in orders:
+                rows = connection.execute("""
+                    SELECT item_name, unit_price, quantity
+                    FROM order_items
+                    WHERE order_id = ?
+                    ORDER BY id
+                """, (order["id"],)).fetchall()
+
+                is_paid = order["payment_status"] == "paid"
+
+                result.append({
+                    "order_id": order["id"],
+                    "total": order["total"],
+                    "status": order["status"],
+                    "payment_status": order["payment_status"],
+                    "created_at": order["created_at"],
+
+                    # Only reveal collection credentials after payment.
+                    "qr_token": order["qr_token"] if is_paid else None,
+                    "pickup_code": order["pickup_code"] if is_paid else None,
+
+                    "items": [
+                        {
+                            "name": row["item_name"],
+                            "price": row["unit_price"],
+                            "quantity": row["quantity"]
+                        }
+                        for row in rows
+                    ]
+                })
+
+        return jsonify({"orders": result}), 200
+
+    except sqlite3.Error:
+        app.logger.exception("Could not load student order history.")
+        return jsonify({"error": "Could not load your orders."}), 500
+
+
 
 
 @app.route("/api/orders/<int:order_id>/status", methods=["GET"])
 @login_required
 def order_status(order_id):
     qr_token = request.args.get("token", "")
+
     if not qr_token or len(qr_token) > 200:
         return jsonify({"error": "Invalid status request."}), 400
 
-    with sqlite3.connect(DATABASE) as connection:
-        order = connection.execute("""
-            SELECT status FROM orders
-            WHERE id = ? AND qr_token = ? AND student_id = ?
-        """, (order_id, qr_token, session["student_id"])).fetchone()
+    try:
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            order = connection.execute("""
+                SELECT status, payment_status
+                FROM orders
+                WHERE id = ? AND qr_token = ? AND student_id = ?
+            """, (order_id, qr_token, session["student_id"])).fetchone()
 
-    if order is None:
-        return jsonify({"error": "Order not found."}), 404
-    return jsonify({"order_id": order_id, "status": order[0]}), 200
+        if order is None:
+            return jsonify({"error": "Order not found."}), 404
+
+        return jsonify({
+            "order_id": order_id,
+            "status": order[0],
+            "payment_status": order[1]
+        }), 200
+
+    except sqlite3.Error:
+        app.logger.exception("Could not retrieve order status.")
+        return jsonify({"error": "Could not retrieve order status."}), 500
 
 
 @app.route("/api/orders/<int:order_id>/receipt", methods=["GET"])
 @login_required
 def order_receipt(order_id):
     qr_token = request.args.get("token", "")
+
     if not qr_token or len(qr_token) > 200:
         return jsonify({"error": "Invalid receipt request."}), 400
 
-    with sqlite3.connect(DATABASE) as connection:
-        connection.row_factory = sqlite3.Row
-        order = connection.execute("""
-            SELECT id, total, status, qr_token, pickup_code
-            FROM orders
-            WHERE id = ? AND qr_token = ? AND student_id = ?
-        """, (order_id, qr_token, session["student_id"])).fetchone()
-        if order is None:
-            return jsonify({"error": "Booking not found."}), 404
+    try:
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.row_factory = sqlite3.Row
 
-        rows = connection.execute("""
-            SELECT item_name, unit_price, quantity FROM order_items
-            WHERE order_id = ? ORDER BY id
-        """, (order_id,)).fetchall()
+            order = connection.execute("""
+                SELECT id, total, status, payment_status,
+                       qr_token, pickup_code
+                FROM orders
+                WHERE id = ? AND qr_token = ? AND student_id = ?
+            """, (order_id, qr_token, session["student_id"])).fetchone()
 
-    return jsonify({
-        "order_id": order["id"],
-        "total": order["total"],
-        "status": order["status"],
-        "pickup_code": order["pickup_code"],
-        "items": [
-            {"name": row["item_name"], "price": row["unit_price"], "quantity": row["quantity"]}
-            for row in rows
-        ]
-    }), 200
+            if order is None:
+                return jsonify({"error": "Booking not found."}), 404
+
+            if order["payment_status"] != "paid":
+                return jsonify({
+                    "error": "Receipt is available only after successful payment."
+                }), 403
+
+            rows = connection.execute("""
+                SELECT item_name, unit_price, quantity
+                FROM order_items
+                WHERE order_id = ?
+                ORDER BY id
+            """, (order_id,)).fetchall()
+
+        return jsonify({
+            "order_id": order["id"],
+            "total": order["total"],
+            "status": order["status"],
+            "payment_status": order["payment_status"],
+            "pickup_code": order["pickup_code"],
+            "items": [
+                {
+                    "name": row["item_name"],
+                    "price": row["unit_price"],
+                    "quantity": row["quantity"]
+                }
+                for row in rows
+            ]
+        }), 200
+
+    except sqlite3.Error:
+        app.logger.exception("Could not retrieve order receipt.")
+        return jsonify({"error": "Could not retrieve receipt."}), 500
+
 
 
 # --------------------------------------------------

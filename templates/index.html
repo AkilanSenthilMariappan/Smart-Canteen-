@@ -454,6 +454,7 @@
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 
 <script>
 "use strict";
@@ -588,15 +589,21 @@ function clearCart() {
     renderCart();
 }
 
+
 function showOrderQr(orderId, token) {
     const qrContainer = document.getElementById("order-qr");
     const message = document.getElementById("live-order-message");
+
+    if (!qrContainer || !message) {
+        console.error("Order QR elements are missing.");
+        return;
+    }
 
     qrContainer.replaceChildren();
 
     if (typeof QRCode === "undefined") {
         message.textContent =
-            "QR generator failed to load. Check your internet connection. You can use your pickup code instead.";
+            "QR generator failed to load. You can use your pickup code instead.";
     } else {
         new QRCode(qrContainer, {
             text: token,
@@ -608,6 +615,7 @@ function showOrderQr(orderId, token) {
 
     if (orderStatusTimer !== null) {
         clearInterval(orderStatusTimer);
+        orderStatusTimer = null;
     }
 
     activeOrderId = orderId;
@@ -629,6 +637,7 @@ async function checkOrderStatus(orderId, token) {
         const response = await fetch(url);
 
         if (!response.ok) {
+            console.error("Order status request failed:", response.status);
             return;
         }
 
@@ -640,12 +649,19 @@ async function checkOrderStatus(orderId, token) {
         const message =
             document.getElementById("live-order-message");
 
+        const heading =
+            document.getElementById("confirmation-heading");
+
+        if (!statusElement || !message || !heading) {
+            console.error("Order status display elements are missing.");
+            return;
+        }
+
         if (result.status === "successful") {
             statusElement.textContent = "Successful";
             statusElement.classList.add("status-success");
 
-            document.getElementById("confirmation-heading").textContent =
-                "Order verified successfully!";
+            heading.textContent = "Order verified successfully!";
 
             message.textContent =
                 "Your order is verified. Please collect your food from the staff.";
@@ -654,6 +670,7 @@ async function checkOrderStatus(orderId, token) {
                 clearInterval(orderStatusTimer);
                 orderStatusTimer = null;
             }
+
         } else {
             statusElement.textContent = "Pending";
             statusElement.classList.remove("status-success");
@@ -661,10 +678,13 @@ async function checkOrderStatus(orderId, token) {
             message.textContent =
                 "Waiting for staff to verify your QR code or pickup code.";
         }
+
     } catch (error) {
         console.error("Order status check failed:", error);
     }
 }
+
+
 
 async function continueOrder() {
     const entries = Object.values(cart);
@@ -679,119 +699,283 @@ async function continueOrder() {
 
     const button = document.getElementById("continue-button");
 
+    if (!button || button.disabled) {
+        return;
+    }
+
+    const csrfToken = document.querySelector(
+        'meta[name="csrf-token"]'
+    )?.content;
+
+    if (!csrfToken) {
+        showCartMessage("Security token missing. Refresh the page.", true);
+        return;
+    }
+
     button.disabled = true;
-    button.textContent = "Placing order...";
+    button.textContent = "Creating payment...";
     showCartMessage("", false);
 
+    let verificationStarted = false;
+    let paymentFailed = false;
+
     try {
+        // 1. Create an unpaid order on the server.
         const response = await fetch("/api/orders", {
             method: "POST",
             headers: {
-                "Content-Type": "application/json", "X-CSRFToken": document.querySelector('meta[name="csrf-token"]').content
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrfToken
             },
             body: JSON.stringify({
-                items: entries.map(function (item) {
-                    return {
-                        id: item.id,
-                        quantity: item.quantity
-                    };
-                })
+                items: entries.map(item => ({
+                    id: item.id,
+                    quantity: item.quantity
+                }))
             })
         });
 
         const result = await response.json();
 
         if (!response.ok) {
+            throw new Error(result.error || "Could not create order.");
+        }
+
+        // 2. Validate the response before opening checkout.
+        if (
+            !result.key_id ||
+            !result.razorpay_order_id ||
+            !Number.isInteger(result.amount) ||
+            result.amount <= 0 ||
+            result.currency !== "INR" ||
+            !result.order_id ||
+            !Array.isArray(result.items)
+        ) {
+            throw new Error("Invalid payment information received.");
+        }
+
+        if (!window.Razorpay) {
+            throw new Error(
+                "Razorpay Checkout failed to load. Refresh the page."
+            );
+        }
+
+        button.textContent = "Waiting for payment...";
+
+        // 3. Configure Razorpay Checkout.
+        const options = {
+            key: result.key_id,
+            amount: result.amount,
+            currency: result.currency,
+            name: "Smart Canteen",
+            description: "Order #" + result.order_id,
+            order_id: result.razorpay_order_id,
+
+            handler: async function (paymentResponse) {
+                if (verificationStarted) {
+                    return;
+                }
+
+                verificationStarted = true;
+
+                button.disabled = true;
+                button.textContent = "Verifying payment...";
+
+                try {
+                    if (
+                        !paymentResponse.razorpay_order_id ||
+                        !paymentResponse.razorpay_payment_id ||
+                        !paymentResponse.razorpay_signature
+                    ) {
+                        throw new Error(
+                            "Payment response is incomplete."
+                        );
+                    }
+
+                    // 4. Verify payment with our Flask backend.
+                    const verifyResponse = await fetch(
+                        "/api/orders/verify-payment",
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "X-CSRFToken": csrfToken
+                            },
+                            body: JSON.stringify({
+                                order_id: result.order_id,
+                                razorpay_order_id:
+                                    paymentResponse.razorpay_order_id,
+                                razorpay_payment_id:
+                                    paymentResponse.razorpay_payment_id,
+                                razorpay_signature:
+                                    paymentResponse.razorpay_signature
+                            })
+                        }
+                    );
+
+                    const verified = await verifyResponse.json();
+
+                    if (
+                        !verifyResponse.ok ||
+                        !verified.success ||
+                        !verified.qr_token ||
+                        !verified.pickup_code
+                    ) {
+                        throw new Error(
+                            verified.error ||
+                            "Payment verification could not be completed."
+                        );
+                    }
+
+                    // 5. Show confirmation only after server verification.
+                    document.getElementById(
+                        "confirmed-order-id"
+                    ).textContent = verified.order_id;
+
+                    document.getElementById(
+                        "confirmed-order-total"
+                    ).textContent = result.total;
+
+                    document.getElementById(
+                        "pickup-code"
+                    ).textContent = verified.pickup_code;
+
+                    const statusElement = document.getElementById(
+                        "confirmed-order-status"
+                    );
+
+                    statusElement.textContent =
+                        "Paid - Pending collection";
+
+                    statusElement.classList.remove("status-success");
+
+                    document.getElementById(
+                        "confirmation-heading"
+                    ).textContent = "Payment successful!";
+
+                    document.getElementById(
+                        "live-order-message"
+                    ).textContent =
+                        "Payment verified. Show your QR code or pickup code to the canteen staff.";
+
+                    // Display ordered items safely.
+                    const confirmedItems = document.getElementById(
+                        "confirmed-order-items"
+                    );
+
+                    confirmedItems.replaceChildren();
+
+                    result.items.forEach(item => {
+                        const row = document.createElement("div");
+                        row.className = "confirmed-item";
+
+                        const name = document.createElement("span");
+                        name.textContent =
+                            item.name + " × " + item.quantity;
+
+                        const price = document.createElement("strong");
+                        price.textContent =
+                            "₹" + (item.price * item.quantity);
+
+                        row.appendChild(name);
+                        row.appendChild(price);
+
+                        confirmedItems.appendChild(row);
+                    });
+
+                    document.getElementById(
+                        "order-confirmation"
+                    ).hidden = false;
+
+                    // Generate the QR code using the verified token.
+                    showOrderQr(
+                        verified.order_id,
+                        verified.qr_token
+                    );
+
+                    clearCart();
+
+                    document.getElementById(
+                        "order-confirmation"
+                    ).scrollIntoView({
+                        behavior: "smooth",
+                        block: "start"
+                    });
+
+                    button.textContent = "Place order";
+                    button.disabled = false;
+
+                } catch (error) {
+                    console.error(
+                        "Payment verification error:",
+                        error
+                    );
+
+                    // Do not allow another payment attempt while
+                    // the previous payment's status is uncertain.
+                    button.disabled = true;
+                    button.textContent = "Payment verification pending";
+
+                    showCartMessage(
+                        error.message +
+                        " Do not make another payment. Contact canteen staff to check this order.",
+                        true
+                    );
+                }
+            },
+
+            modal: {
+                ondismiss: function () {
+                    if (!verificationStarted && !paymentFailed) {
+                        showCartMessage(
+                            "Checkout closed. Your order remains unpaid unless payment was completed.",
+                            true
+                        );
+
+                        button.disabled = false;
+                        button.textContent = "Place order";
+                    }
+                }
+            },
+
+            theme: {
+                color: "#176b3a"
+            }
+        };
+
+        // 6. Open Razorpay Checkout.
+        const checkout = new Razorpay(options);
+
+        checkout.on("payment.failed", function (failure) {
+            paymentFailed = true;
+
+            console.error("Payment failed:", failure);
+
             showCartMessage(
-                result.error || "Could not place your order.",
+                "Payment was not completed. You can try again.",
                 true
             );
-            return;
-        }
 
-        document.getElementById("confirmed-order-id").textContent =
-            result.order_id;
-
-        document.getElementById("confirmed-order-total").textContent =
-            result.total;
-
-        // NEW: Display the pickup code returned by app.py.
-        const pickupCodeElement = document.getElementById("pickup-code");
-
-        if (result.pickup_code !== undefined &&
-            result.pickup_code !== null &&
-            /^\d{6}$/.test(String(result.pickup_code))) {
-
-            pickupCodeElement.textContent = String(result.pickup_code);
-        } else {
-            pickupCodeElement.textContent = "Unavailable";
-
-            console.error(
-                "Pickup code missing or invalid. Check the /api/orders response in app.py."
-            );
-        }
-
-        const statusElement =
-            document.getElementById("confirmed-order-status");
-
-        statusElement.textContent = "Pending";
-        statusElement.classList.remove("status-success");
-
-        document.getElementById("confirmation-heading").textContent =
-            "Order received!";
-
-        document.getElementById("live-order-message").textContent =
-            "Waiting for staff to verify your order.";
-
-        const confirmedItems =
-            document.getElementById("confirmed-order-items");
-
-        confirmedItems.replaceChildren();
-
-        result.items.forEach(function (item) {
-            const row = document.createElement("div");
-            row.className = "confirmed-item";
-
-            const name = document.createElement("span");
-            name.textContent = item.name + " × " + item.quantity;
-
-            const price = document.createElement("strong");
-            price.textContent = "₹" + (item.price * item.quantity);
-
-            row.appendChild(name);
-            row.appendChild(price);
-
-            confirmedItems.appendChild(row);
+            button.disabled = false;
+            button.textContent = "Place order";
         });
 
-        document.getElementById("order-confirmation").hidden = false;
-
-        if (result.qr_token) {
-            showOrderQr(result.order_id, result.qr_token);
-        } else {
-            document.getElementById("live-order-message").textContent =
-                "QR token missing. You can use your pickup code if it is available.";
-        }
-
-        clearCart();
-
-        document.getElementById("order-confirmation").scrollIntoView({
-            behavior: "smooth",
-            block: "start"
-        });
+        checkout.open();
 
     } catch (error) {
-        console.error("Order submission failed:", error);
+        console.error("Checkout error:", error);
 
         showCartMessage(
-            "Could not contact the server. Please check your connection.",
+            error.message || "Could not start checkout.",
             true
         );
-    } finally {
+
         button.disabled = false;
         button.textContent = "Place order";
     }
 }
+
+
 
 
 document.getElementById("menu-search").addEventListener("input", function () {
