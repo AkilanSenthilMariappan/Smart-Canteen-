@@ -142,6 +142,19 @@ def init_database():
                 FOREIGN KEY (order_id) REFERENCES orders(id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS menu_items (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                price INTEGER NOT NULL CHECK (price >= 0),
+                category TEXT NOT NULL,
+                available INTEGER NOT NULL DEFAULT 1
+                    CHECK (available IN (0, 1)),
+                stock INTEGER NOT NULL DEFAULT 0
+                    CHECK (stock >= 0),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         # Read existing order columns.
         columns = {
@@ -211,6 +224,27 @@ def init_database():
             CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_razorpay_payment
             ON orders(razorpay_payment_id)
         """)
+
+        # Seed the existing menu only when the menu table is empty.
+        menu_count = conn.execute(
+            "SELECT COUNT(*) FROM menu_items"
+        ).fetchone()[0]
+
+        if menu_count == 0:
+            conn.executemany("""
+                INSERT INTO menu_items
+                    (id, name, price, category, available, stock)
+                VALUES (?, ?, ?, ?, ?, 0)
+            """, [
+                (
+                    item["id"],
+                    item["name"],
+                    item["price"],
+                    item["category"],
+                    int(item["available"])
+                )
+                for item in menu_items
+            ])
 
 # --------------------------------------------------
 # PICKUP CODE
@@ -739,13 +773,21 @@ def staff_logout():
 @app.route("/")
 @login_required
 def home():
+    with sqlite3.connect(DATABASE) as conn:
+        conn.row_factory = sqlite3.Row
+
+        menu_items = conn.execute("""
+            SELECT id, name, price, category, available, stock
+            FROM menu_items
+            ORDER BY id
+        """).fetchall()
+
     return render_template(
         "index.html",
         menu_items=menu_items,
         student_name=session.get("student_name", "Student"),
         student_email=session.get("student_email", "")
     )
-
 
 @app.route("/booking")
 @login_required
@@ -829,169 +871,39 @@ def admin():
 # CREATE STUDENT ORDER
 # --------------------------------------------------
 
-@app.route("/api/orders", methods=["POST"])
-@login_required
-def create_order():
-    if not is_booking_open():
-        return jsonify({
-            "error": (
-                "Booking is currently closed. Please try between "
-                "11:45 AM and 12:35 PM IST."
-            )
-        }), 403
-
-    # Get Razorpay credentials from environment
-    key_id = os.getenv("RAZORPAY_KEY_ID")
-    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
-
-    if not key_id or not key_secret:
-        return jsonify({
-            "error": "Payment gateway is not configured."
-        }), 503
-
-    data = request.get_json(silent=True)
-
-    if not isinstance(data, dict):
-        return jsonify({"error": "Invalid order data."}), 400
-
-    items = data.get("items")
-
-    if not isinstance(items, list) or not items:
-        return jsonify({"error": "Your cart is empty."}), 400
-
-    validated_items = []
-    seen_ids = set()
-    total = 0
-
-    menu_by_id = {item["id"]: item for item in menu_items}
-
-    for entry in items:
-        if not isinstance(entry, dict):
-            return jsonify({"error": "Invalid item in your cart."}), 400
-
-        item_id = entry.get("id")
-        quantity = entry.get("quantity")
-
-        if (
-            isinstance(item_id, bool)
-            or not isinstance(item_id, int)
-            or item_id not in menu_by_id
-        ):
-            return jsonify({"error": "Invalid menu item."}), 400
-
-        if (
-            isinstance(quantity, bool)
-            or not isinstance(quantity, int)
-            or quantity < 1
-            or quantity > 50
-        ):
-            return jsonify({"error": "Invalid item quantity."}), 400
-
-        if item_id in seen_ids:
-            return jsonify({"error": "Duplicate menu item."}), 400
-
-        seen_ids.add(item_id)
-
-        menu_item = menu_by_id[item_id]
-
-        if not menu_item["available"]:
-            return jsonify({
-                "error": f'{menu_item["name"]} is unavailable.'
-            }), 400
-
-        total += menu_item["price"] * quantity
-
-        validated_items.append({
-            "id": item_id,
-            "name": menu_item["name"],
-            "price": menu_item["price"],
-            "quantity": quantity,
-        })
-
-    if total <= 0:
-        return jsonify({"error": "Invalid order amount."}), 400
-
+@app.route("/api/admin/menu", methods=["GET"])
+@staff_login_required
+def admin_get_menu():
     try:
-        # Save the unpaid order first
         with sqlite3.connect(DATABASE, timeout=10) as connection:
-            cursor = connection.execute("""
-                INSERT INTO orders
-                    (total, status, student_id, payment_status)
-                VALUES (?, ?, ?, ?)
-            """, (
-                total,
-                "pending",
-                session["student_id"],
-                "unpaid"
-            ))
+            connection.row_factory = sqlite3.Row
 
-            order_id = cursor.lastrowid
-
-            for item in validated_items:
-                connection.execute("""
-                    INSERT INTO order_items
-                        (order_id, menu_item_id, item_name,
-                         unit_price, quantity)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (
-                    order_id,
-                    item["id"],
-                    item["name"],
-                    item["price"],
-                    item["quantity"]
-                ))
-
-        # Convert rupees to paise
-        amount_in_paise = total * 100
-
-        # Create Razorpay order
-        client = razorpay.Client(
-            auth=(key_id, key_secret)
-        )
-
-        razorpay_order = client.order.create(data={
-            "amount": amount_in_paise,
-            "currency": "INR",
-            "receipt": f"canteen_{order_id}"
-        })
-
-        razorpay_order_id = razorpay_order["id"]
-
-        # Save Razorpay order ID
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.execute("""
-                UPDATE orders
-                SET razorpay_order_id = ?
-                WHERE id = ?
-            """, (razorpay_order_id, order_id))
+            menu_items = connection.execute("""
+                SELECT id, name, price, category, available, stock
+                FROM menu_items
+                ORDER BY category, name
+            """).fetchall()
 
         return jsonify({
-            "order_id": order_id,
-            "total": total,
-            "amount": amount_in_paise,
-            "currency": "INR",
-            "key_id": key_id,
-            "razorpay_order_id": razorpay_order_id,
-            "items": validated_items
-        }), 201
+            "success": True,
+            "menu_items": [
+                dict(item) for item in menu_items
+            ]
+        }), 200
 
     except Exception:
-        app.logger.exception(
-            "Razorpay order creation failed."
-        )
+        app.logger.exception("Could not fetch admin menu.")
 
         return jsonify({
-            "error": (
-                "Could not initialize payment. "
-                "Please try again."
-            )
-        }), 502
+            "error": "Could not load menu items."
+        }), 500
 
 
 
 # --------------------------------------------------
 # VERIFY RAZORPAY PAYMENT
 # --------------------------------------------------
+
 
 @app.route("/api/orders/verify-payment", methods=["POST"])
 @login_required
@@ -1039,7 +951,7 @@ def verify_payment():
                 "error": "Payment signature is invalid."
             }), 400
 
-        # 2. Fetch payment directly from Razorpay.
+        # 2. Verify payment directly with Razorpay.
         client = razorpay.Client(auth=(key_id, key_secret))
         payment = client.payment.fetch(payment_id)
 
@@ -1051,10 +963,10 @@ def verify_payment():
                 "error": "Payment has not been captured yet."
             }), 400
 
-        # 3. Verify and update the database atomically.
         response_data = None
         response_status = 200
 
+        # 3. Verify and update everything atomically.
         with sqlite3.connect(DATABASE, timeout=10) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("BEGIN IMMEDIATE")
@@ -1091,6 +1003,7 @@ def verify_payment():
                 }
                 response_status = 400
 
+            # Already-paid order: never deduct stock again.
             elif order["payment_status"] == "paid":
                 if order["razorpay_payment_id"] != payment_id:
                     response_data = {
@@ -1098,7 +1011,6 @@ def verify_payment():
                     }
                     response_status = 409
                 else:
-                    # Idempotent response for repeated verification.
                     response_data = {
                         "success": True,
                         "order_id": order_id,
@@ -1106,50 +1018,169 @@ def verify_payment():
                         "pickup_code": order["pickup_code"]
                     }
 
+            # Do not process other payment states.
             elif order["payment_status"] != "unpaid":
                 response_data = {
-                    "error": "Order cannot be paid."
+                    "error": (
+                        "This order cannot be paid. "
+                        "Please contact canteen staff."
+                    )
                 }
                 response_status = 409
 
             else:
-                # Generate collection credentials only after payment capture.
-                qr_token = secrets.token_urlsafe(32)
-                pickup_code = generate_pickup_code(connection)
+                # Fetch all ordered items.
+                order_items = connection.execute("""
+                    SELECT menu_item_id, quantity
+                    FROM order_items
+                    WHERE order_id = ?
+                """, (order_id,)).fetchall()
 
-                cursor = connection.execute("""
-                    UPDATE orders
-                    SET payment_status = 'paid',
-                        razorpay_payment_id = ?,
-                        payment_verified_at = ?,
-                        qr_token = ?,
-                        pickup_code = ?
-                    WHERE id = ?
-                      AND student_id = ?
-                      AND payment_status = 'unpaid'
-                      AND razorpay_order_id = ?
-                """, (
-                    payment_id,
-                    datetime.now(INDIA_TZ).isoformat(),
-                    qr_token,
-                    pickup_code,
-                    order_id,
-                    session["student_id"],
-                    razorpay_order_id
-                ))
-
-                if cursor.rowcount != 1:
+                if not order_items:
                     response_data = {
-                        "error": "Order could not be updated. Please try again."
+                        "error": "Order items not found. Contact canteen staff."
                     }
                     response_status = 409
+
                 else:
-                    response_data = {
-                        "success": True,
-                        "order_id": order_id,
-                        "qr_token": qr_token,
-                        "pickup_code": pickup_code
-                    }
+                    # Check all stock before deducting anything.
+                    stock_issue = None
+
+                    for order_item in order_items:
+                        menu_item = connection.execute("""
+                            SELECT name, stock, available
+                            FROM menu_items
+                            WHERE id = ?
+                        """, (
+                            order_item["menu_item_id"],
+                        )).fetchone()
+
+                        if menu_item is None:
+                            stock_issue = "A menu item no longer exists."
+                            break
+
+                        if not menu_item["available"]:
+                            stock_issue = (
+                                f'{menu_item["name"]} is unavailable.'
+                            )
+                            break
+
+                        if menu_item["stock"] < order_item["quantity"]:
+                            stock_issue = (
+                                f'{menu_item["name"]} has insufficient stock.'
+                            )
+                            break
+
+                    if stock_issue:
+                        # Payment was captured, but the order cannot be fulfilled.
+                        # Record this state for staff refund handling.
+                        connection.execute("""
+                            UPDATE orders
+                            SET payment_status = 'refund_required',
+                                razorpay_payment_id = ?,
+                                payment_verified_at = ?
+                            WHERE id = ?
+                              AND payment_status = 'unpaid'
+                        """, (
+                            payment_id,
+                            datetime.now(INDIA_TZ).isoformat(),
+                            order_id
+                        ))
+
+                        response_data = {
+                            "success": False,
+                            "payment_captured": True,
+                            "refund_required": True,
+                            "error": (
+                                "Payment was captured, but the order "
+                                "could not be fulfilled: "
+                                + stock_issue
+                                + " Please contact canteen staff "
+                                  "for a refund."
+                            )
+                        }
+                        response_status = 409
+
+                    else:
+                        # Deduct stock within the same transaction.
+                        stock_update_failed = False
+
+                        for order_item in order_items:
+                            cursor = connection.execute("""
+                                UPDATE menu_items
+                                SET stock = stock - ?
+                                WHERE id = ?
+                                  AND available = 1
+                                  AND stock >= ?
+                            """, (
+                                order_item["quantity"],
+                                order_item["menu_item_id"],
+                                order_item["quantity"]
+                            ))
+
+                            if cursor.rowcount != 1:
+                                stock_update_failed = True
+                                break
+
+                        if stock_update_failed:
+                            # Roll back every stock deduction.
+                            connection.rollback()
+
+                            response_data = {
+                                "error": (
+                                    "Stock update failed. "
+                                    "Payment may have been captured. "
+                                    "Please contact canteen staff."
+                                ),
+                                "payment_captured": True
+                            }
+                            response_status = 409
+
+                        else:
+                            # Generate collection credentials.
+                            qr_token = secrets.token_urlsafe(32)
+                            pickup_code = generate_pickup_code(connection)
+
+                            cursor = connection.execute("""
+                                UPDATE orders
+                                SET payment_status = 'paid',
+                                    razorpay_payment_id = ?,
+                                    payment_verified_at = ?,
+                                    qr_token = ?,
+                                    pickup_code = ?
+                                WHERE id = ?
+                                  AND student_id = ?
+                                  AND payment_status = 'unpaid'
+                                  AND razorpay_order_id = ?
+                            """, (
+                                payment_id,
+                                datetime.now(INDIA_TZ).isoformat(),
+                                qr_token,
+                                pickup_code,
+                                order_id,
+                                session["student_id"],
+                                razorpay_order_id
+                            ))
+
+                            if cursor.rowcount != 1:
+                                connection.rollback()
+
+                                response_data = {
+                                    "error": (
+                                        "Order update failed. "
+                                        "Please contact canteen staff."
+                                    ),
+                                    "payment_captured": True
+                                }
+                                response_status = 409
+
+                            else:
+                                response_data = {
+                                    "success": True,
+                                    "order_id": order_id,
+                                    "qr_token": qr_token,
+                                    "pickup_code": pickup_code
+                                }
 
         return jsonify(response_data), response_status
 
@@ -1157,7 +1188,10 @@ def verify_payment():
         app.logger.exception("Payment verification failed.")
 
         return jsonify({
-            "error": "Could not verify payment. Please contact the canteen staff."
+            "error": (
+                "Could not verify payment. "
+                "Please contact canteen staff."
+            )
         }), 500
 
 
