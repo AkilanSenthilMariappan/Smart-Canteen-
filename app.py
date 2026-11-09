@@ -414,6 +414,7 @@ def request_registration_otp():
         student = conn.execute(
             "SELECT id FROM students WHERE email = ?", (email,)
         ).fetchone()
+        app.logger.info("Student account found in database: %s", student is not None)
         if purpose == "register" and student:
             return json_error("An account already exists for this email. Please sign in.", 409)
         if purpose == "reset" and not student:
