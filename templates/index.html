@@ -554,6 +554,28 @@ function renderCart() {
     });
 
     totalElement.textContent = total;
+
+function clearCart() {
+    // Remove all items from the cart.
+    Object.keys(cart).forEach(function (key) {
+        delete cart[key];
+    });
+
+    // Refresh the cart display.
+    renderCart();
+
+    // Clear any previous cart messages.
+    showCartMessage("", false);
+
+    // Reset the order button.
+    const button = document.getElementById("continue-button");
+
+    if (button) {
+        button.disabled = false;
+        button.textContent = "Place order";
+    }
+}
+
 }
 
 
