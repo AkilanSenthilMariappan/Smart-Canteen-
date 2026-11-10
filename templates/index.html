@@ -475,6 +475,60 @@ let orderStatusTimer = null;
 let activeOrderId = null;
 let activeQrToken = null;
 
+async function refreshMenuStock() {
+    try {
+        const response = await fetch("/api/menu", {
+            method: "GET",
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error("Could not refresh menu stock.");
+        }
+
+        const result = await response.json();
+
+        result.menu_items.forEach(function (item) {
+            const button = document.querySelector(
+                '.add-to-cart[data-id="' + item.id + '"]'
+            );
+
+            if (!button) return;
+
+            const card = button.closest(".menu-card");
+            const stockText = card.querySelector(".stock");
+
+            // Update displayed stock.
+            stockText.textContent = item.stock > 0
+                ? "Available: " + item.stock
+                : "Out of stock";
+
+            // Update the stock used by Add to Cart.
+            button.dataset.stock = item.stock;
+
+            // Update availability.
+            if (!item.available || item.stock <= 0) {
+                button.disabled = true;
+                button.textContent = !item.available
+                    ? "Currently unavailable"
+                    : "Out of stock";
+            } else {
+                button.disabled = false;
+                button.textContent = "Add to cart";
+            }
+
+            // Update cart's stock limit too.
+            if (cart[item.id]) {
+                cart[item.id].stock = item.stock;
+            }
+        });
+
+    } catch (error) {
+        console.error("Menu stock refresh failed:", error);
+    }
+}
+
+
 function showCartMessage(message, isError) {
     const box = document.getElementById("cart-message");
 
@@ -940,6 +994,7 @@ async function continueOrder() {
                     );
 
                     clearCart();
+                    await refreshMenuStock();
 
                     document.getElementById(
                         "order-confirmation"
