@@ -789,6 +789,32 @@ def home():
         student_email=session.get("student_email", "")
     )
 
+
+@app.route("/api/menu", methods=["GET"])
+@login_required
+def get_student_menu():
+    try:
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.row_factory = sqlite3.Row
+
+            items = connection.execute("""
+                SELECT id, name, price, category, available, stock
+                FROM menu_items
+                ORDER BY id
+            """).fetchall()
+
+        return jsonify({
+            "success": True,
+            "menu_items": [dict(item) for item in items]
+        }), 200
+
+    except Exception:
+        app.logger.exception("Could not fetch student menu.")
+        return jsonify({
+            "error": "Could not refresh menu."
+        }), 500
+
+
 @app.route("/booking")
 @login_required
 def booking():
