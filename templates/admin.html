@@ -238,7 +238,62 @@
             position: absolute;
             left: -10000px;
         }
+/* Menu Management Styles */
+.menu-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 18px 0;
+}
 
+.menu-form input,
+.menu-table-input {
+    width: 100%;
+    min-width: 80px;
+    padding: 10px;
+    border: 1px solid #d1d9d2;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.menu-table-input {
+    max-width: 130px;
+}
+
+.menu-availability {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.menu-save-button {
+    padding: 9px 12px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--green);
+    color: white;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.menu-save-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+@media (max-width: 760px) {
+    .menu-form {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Existing filters CSS — KEEP THIS */
+.filters {
+    display: grid;
+    grid-template-columns: minmax(180px, 2fr) repeat(3, minmax(140px, 1fr));
+    gap: 12px;
+    margin: 20px 0;
+}
         .filters {
             display: grid;
             grid-template-columns: minmax(180px, 2fr) repeat(3, minmax(140px, 1fr));
@@ -411,10 +466,95 @@
                 <div class="stat-value">{{ items_sold_today | default(0) }}</div>
             </div>
         </div>
+
+    </section>
+
+    <!-- MENU MANAGEMENT -->
+    <section class="panel" id="menu-management">
+        <h2>Menu Management</h2>
+        <p class="description">
+            Add food items, edit prices, manage stock and control availability.
+        </p>
+
+        <h3>Add New Food Item</h3>
+
+        <form id="add-menu-form" class="menu-form">
+            <input
+                type="text"
+                id="new-item-name"
+                placeholder="Food item name"
+                maxlength="80"
+                required
+            >
+
+            <input
+                type="text"
+                id="new-item-category"
+                placeholder="Category"
+                maxlength="40"
+                required
+            >
+
+            <input
+                type="number"
+                id="new-item-price"
+                placeholder="Price (₹)"
+                min="0"
+                step="1"
+                required
+            >
+
+            <input
+                type="number"
+                id="new-item-stock"
+                placeholder="Initial stock"
+                min="0"
+                step="1"
+                required
+            >
+
+            <button type="submit" class="primary-button">
+                Add Food Item
+            </button>
+        </form>
+
+        <p
+            id="menu-message"
+            class="scan-result"
+            role="status"
+            aria-live="polite"
+            hidden>
+        </p>
+
+        <h3 style="margin-top: 28px;">Existing Menu Items</h3>
+
+        <div class="table-wrap">
+            <table id="menu-table">
+                <thead>
+                    <tr>
+                        <th>Food Item</th>
+                        <th>Category</th>
+                        <th>Price (₹)</th>
+                        <th>Stock</th>
+                        <th>Available</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+
+                <tbody id="menu-table-body">
+                    <tr>
+                        <td colspan="6" class="empty-state">
+                            Loading menu items...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
     </section>
 
     <section class="panel">
         <h2>Verify Student Order</h2>
+
         <p class="description">
             Scan the QR code displayed by the student or upload a screenshot
             of the order QR code. Only hand over food after successful
@@ -949,6 +1089,292 @@
             uploadScanButton.disabled = false;
         }
     });
+
+// ==========================================
+// MENU MANAGEMENT
+// ==========================================
+
+const menuForm = document.getElementById("add-menu-form");
+const menuTableBody = document.getElementById("menu-table-body");
+const menuMessage = document.getElementById("menu-message");
+
+// Display success and error messages
+function showMenuMessage(message, isError = false) {
+    menuMessage.textContent = message;
+    menuMessage.hidden = false;
+
+    menuMessage.style.color = isError ? "#b42318" : "#16733b";
+}
+
+// Create an input field safely
+function createMenuInput(value, type = "text") {
+    const input = document.createElement("input");
+
+    input.type = type;
+    input.value = value ?? "";
+    input.className = "menu-table-input";
+
+    if (type === "number") {
+        input.min = "0";
+        input.step = "1";
+    }
+
+    return input;
+}
+
+// Load menu items from the backend
+async function loadMenuItems() {
+    menuTableBody.replaceChildren();
+
+    const loadingRow = document.createElement("tr");
+    const loadingCell = document.createElement("td");
+
+    loadingCell.colSpan = 6;
+    loadingCell.textContent = "Loading menu items...";
+
+    loadingRow.appendChild(loadingCell);
+    menuTableBody.appendChild(loadingRow);
+
+    try {
+        const response = await fetch("/api/admin/menu");
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || "Could not load menu.");
+        }
+
+        renderMenuItems(result.menu_items);
+
+    } catch (error) {
+        menuTableBody.replaceChildren();
+
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+
+        cell.colSpan = 6;
+        cell.textContent = error.message;
+
+        row.appendChild(cell);
+        menuTableBody.appendChild(row);
+    }
+}
+
+// Display menu items in the table
+function renderMenuItems(items) {
+    menuTableBody.replaceChildren();
+
+    if (items.length === 0) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+
+        cell.colSpan = 6;
+        cell.textContent = "No food items available.";
+
+        row.appendChild(cell);
+        menuTableBody.appendChild(row);
+        return;
+    }
+
+    items.forEach(item => {
+        const row = document.createElement("tr");
+
+        // Food item name
+        const nameCell = document.createElement("td");
+        const nameInput = createMenuInput(item.name);
+        nameCell.appendChild(nameInput);
+
+        // Category
+        const categoryCell = document.createElement("td");
+        const categoryInput = createMenuInput(item.category);
+        categoryCell.appendChild(categoryInput);
+
+        // Price
+        const priceCell = document.createElement("td");
+        const priceInput = createMenuInput(item.price, "number");
+        priceCell.appendChild(priceInput);
+
+        // Stock
+        const stockCell = document.createElement("td");
+        const stockInput = createMenuInput(item.stock, "number");
+        stockCell.appendChild(stockInput);
+
+        // Availability checkbox
+        const availabilityCell = document.createElement("td");
+        const availabilityInput = document.createElement("input");
+
+        availabilityInput.type = "checkbox";
+        availabilityInput.checked = Boolean(item.available);
+        availabilityInput.className = "menu-availability";
+
+        availabilityCell.appendChild(availabilityInput);
+
+        // Save button
+        const actionCell = document.createElement("td");
+        const saveButton = document.createElement("button");
+
+        saveButton.type = "button";
+        saveButton.textContent = "Save";
+        saveButton.className = "menu-save-button";
+
+        saveButton.addEventListener("click", async () => {
+            const name = nameInput.value.trim();
+            const category = categoryInput.value.trim();
+            const price = Number(priceInput.value);
+            const stock = Number(stockInput.value);
+
+            if (!name || !category) {
+                showMenuMessage(
+                    "Enter both food name and category.",
+                    true
+                );
+                return;
+            }
+
+            if (
+                !Number.isInteger(price) || price < 0 ||
+                !Number.isInteger(stock) || stock < 0
+            ) {
+                showMenuMessage(
+                    "Price and stock must be non-negative whole numbers.",
+                    true
+                );
+                return;
+            }
+
+            saveButton.disabled = true;
+            saveButton.textContent = "Saving...";
+
+            try {
+                const response = await fetch(
+                    `/api/admin/menu/${item.id}`,
+                    {
+                        method: "PUT",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "X-CSRFToken": csrfToken
+                        },
+                        body: JSON.stringify({
+                            name: name,
+                            category: category,
+                            price: price,
+                            stock: stock,
+                            available: availabilityInput.checked
+                        })
+                    }
+                );
+
+                const result = await response.json();
+
+                if (!response.ok || !result.success) {
+                    throw new Error(
+                        result.error || "Could not update item."
+                    );
+                }
+
+                showMenuMessage("Food item updated successfully.");
+                await loadMenuItems();
+
+            } catch (error) {
+                showMenuMessage(error.message, true);
+                saveButton.disabled = false;
+                saveButton.textContent = "Save";
+            }
+        });
+
+        actionCell.appendChild(saveButton);
+
+        row.append(
+            nameCell,
+            categoryCell,
+            priceCell,
+            stockCell,
+            availabilityCell,
+            actionCell
+        );
+
+        menuTableBody.appendChild(row);
+    });
+}
+
+// Add a new food item
+menuForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const name = document.getElementById("new-item-name").value.trim();
+    const category = document.getElementById("new-item-category").value.trim();
+
+    const price = Number(
+        document.getElementById("new-item-price").value
+    );
+
+    const stock = Number(
+        document.getElementById("new-item-stock").value
+    );
+
+    if (!name || !category) {
+        showMenuMessage("Enter the food name and category.", true);
+        return;
+    }
+
+    if (
+        !Number.isInteger(price) || price < 0 ||
+        !Number.isInteger(stock) || stock < 0
+    ) {
+        showMenuMessage(
+            "Price and stock must be non-negative whole numbers.",
+            true
+        );
+        return;
+    }
+
+    const addButton = menuForm.querySelector(
+        'button[type="submit"]'
+    );
+
+    addButton.disabled = true;
+    addButton.textContent = "Adding...";
+
+    try {
+        const response = await fetch("/api/admin/menu", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrfToken
+            },
+            body: JSON.stringify({
+                name: name,
+                category: category,
+                price: price,
+                stock: stock,
+                available: true
+            })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+            throw new Error(
+                result.error || "Could not add food item."
+            );
+        }
+
+        menuForm.reset();
+
+        showMenuMessage("Food item added successfully.");
+
+        await loadMenuItems();
+
+    } catch (error) {
+        showMenuMessage(error.message, true);
+
+    } finally {
+        addButton.disabled = false;
+        addButton.textContent = "Add Food Item";
+    }
+});
+
+// Load menu when the admin page opens
+loadMenuItems();
 
     // Search and filter orders.
     const orderSearch = document.getElementById("order-search");

@@ -898,12 +898,318 @@ def admin_get_menu():
             "error": "Could not load menu items."
         }), 500
 
+@app.route("/api/admin/menu", methods=["POST"])
+@staff_login_required
+def admin_add_menu_item():
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid request data."}), 400
+
+    name = data.get("name")
+    category = data.get("category")
+    price = data.get("price")
+    stock = data.get("stock")
+    available = data.get("available", True)
+
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+        return jsonify({"error": "Enter a valid item name (max 80 characters)."}), 400
+
+    if not isinstance(category, str) or not category.strip() or len(category.strip()) > 40:
+        return jsonify({"error": "Enter a valid category (max 40 characters)."}), 400
+
+    if type(price) is not int or price < 0:
+        return jsonify({"error": "Price must be a non-negative integer."}), 400
+
+    if type(stock) is not int or stock < 0:
+        return jsonify({"error": "Stock must be a non-negative integer."}), 400
+
+    if type(available) not in (bool, int) or available not in (0, 1, False, True):
+        return jsonify({"error": "Invalid availability value."}), 400
+
+    try:
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            cursor = connection.execute("""
+                INSERT INTO menu_items
+                    (name, price, category, available, stock)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                name.strip(),
+                price,
+                category.strip(),
+                int(available),
+                stock
+            ))
+
+            item_id = cursor.lastrowid
+
+            connection.row_factory = sqlite3.Row
+            item = connection.execute("""
+                SELECT id, name, price, category, available, stock
+                FROM menu_items
+                WHERE id = ?
+            """, (item_id,)).fetchone()
+
+        return jsonify({
+            "success": True,
+            "message": "Menu item added successfully.",
+            "menu_item": dict(item)
+        }), 201
+
+    except Exception:
+        app.logger.exception("Could not add menu item.")
+        return jsonify({"error": "Could not add menu item."}), 500
+
+@app.route("/api/admin/menu/<int:item_id>", methods=["PUT"])
+@staff_login_required
+def admin_update_menu_item(item_id):
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid request data."}), 400
+
+    name = data.get("name")
+    category = data.get("category")
+    price = data.get("price")
+    stock = data.get("stock")
+    available = data.get("available")
+
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+        return jsonify({"error": "Enter a valid item name."}), 400
+
+    if not isinstance(category, str) or not category.strip() or len(category.strip()) > 40:
+        return jsonify({"error": "Enter a valid category."}), 400
+
+    if type(price) is not int or price < 0:
+        return jsonify({"error": "Price must be a non-negative integer."}), 400
+
+    if type(stock) is not int or stock < 0:
+        return jsonify({"error": "Stock must be a non-negative integer."}), 400
+
+    if type(available) not in (bool, int) or available not in (0, 1, False, True):
+        return jsonify({"error": "Invalid availability value."}), 400
+
+    try:
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            cursor = connection.execute("""
+                UPDATE menu_items
+                SET name = ?,
+                    price = ?,
+                    category = ?,
+                    stock = ?,
+                    available = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                name.strip(),
+                price,
+                category.strip(),
+                stock,
+                int(available),
+                item_id
+            ))
+
+            if cursor.rowcount == 0:
+                return jsonify({"error": "Menu item not found."}), 404
+
+            connection.row_factory = sqlite3.Row
+
+            item = connection.execute("""
+                SELECT id, name, price, category, available, stock
+                FROM menu_items
+                WHERE id = ?
+            """, (item_id,)).fetchone()
+
+        return jsonify({
+            "success": True,
+            "message": "Menu item updated successfully.",
+            "menu_item": dict(item)
+        }), 200
+
+    except Exception:
+        app.logger.exception("Could not update menu item.")
+        return jsonify({"error": "Could not update menu item."}), 500
 
 
 # --------------------------------------------------
 # VERIFY RAZORPAY PAYMENT
 # --------------------------------------------------
 
+
+@app.route("/api/orders", methods=["POST"])
+@login_required
+def create_order():
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid order data."}), 400
+
+    items = data.get("items")
+
+    if not isinstance(items, list) or not items or len(items) > 50:
+        return jsonify({"error": "Invalid order items."}), 400
+
+    # Validate and combine item quantities.
+    quantities = {}
+
+    for item in items:
+        if not isinstance(item, dict):
+            return jsonify({"error": "Invalid item details."}), 400
+
+        item_id = item.get("id")
+        quantity = item.get("quantity")
+
+        if (
+            isinstance(item_id, bool)
+            or not isinstance(item_id, int)
+            or item_id <= 0
+            or isinstance(quantity, bool)
+            or not isinstance(quantity, int)
+            or quantity <= 0
+            or quantity > 99
+        ):
+            return jsonify({"error": "Invalid item ID or quantity."}), 400
+
+        quantities[item_id] = quantities.get(item_id, 0) + quantity
+
+        if quantities[item_id] > 99:
+            return jsonify({"error": "Quantity limit exceeded."}), 400
+
+    key_id = os.getenv("RAZORPAY_KEY_ID")
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+
+    if not key_id or not key_secret:
+        return jsonify({
+            "error": "Payment gateway is not configured."
+        }), 503
+
+    try:
+        # 1. Validate menu items and calculate prices from the database.
+        order_items = []
+        total = 0
+
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.row_factory = sqlite3.Row
+
+            for item_id, quantity in quantities.items():
+                menu_item = connection.execute("""
+                    SELECT id, name, price, stock, available
+                    FROM menu_items
+                    WHERE id = ?
+                """, (item_id,)).fetchone()
+
+                if menu_item is None:
+                    return jsonify({
+                        "error": "A selected menu item was not found."
+                    }), 400
+
+                if not menu_item["available"]:
+                    return jsonify({
+                        "error": f'{menu_item["name"]} is unavailable.'
+                    }), 409
+
+                if menu_item["stock"] < quantity:
+                    return jsonify({
+                        "error": f'Insufficient stock for {menu_item["name"]}.'
+                    }), 409
+
+                price = menu_item["price"]
+
+                if price < 0:
+                    return jsonify({
+                        "error": "Invalid menu price."
+                    }), 400
+
+                subtotal = price * quantity
+                total += subtotal
+
+                order_items.append({
+                    "id": menu_item["id"],
+                    "name": menu_item["name"],
+                    "price": price,
+                    "quantity": quantity
+                })
+
+        if total <= 0:
+            return jsonify({"error": "Invalid order total."}), 400
+
+        # 2. Create a Razorpay order.
+        client = razorpay.Client(auth=(key_id, key_secret))
+
+        razorpay_order = client.order.create(data={
+            "amount": total * 100,
+            "currency": "INR",
+            "receipt": "sc_" + secrets.token_hex(12)
+        })
+
+        razorpay_order_id = razorpay_order.get("id")
+
+        if not razorpay_order_id:
+            raise RuntimeError("Razorpay did not return an order ID.")
+
+        # 3. Save the unpaid order and its items in SQLite.
+        with sqlite3.connect(DATABASE, timeout=10) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            cursor = connection.execute("""
+                INSERT INTO orders (
+                    total,
+                    status,
+                    student_id,
+                    payment_status,
+                    razorpay_order_id
+                )
+                VALUES (?, 'pending', ?, 'unpaid', ?)
+            """, (
+                total,
+                session["student_id"],
+                razorpay_order_id
+            ))
+
+            local_order_id = cursor.lastrowid
+
+            for item in order_items:
+                connection.execute("""
+                    INSERT INTO order_items (
+                        order_id,
+                        menu_item_id,
+                        item_name,
+                        unit_price,
+                        quantity
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    local_order_id,
+                    item["id"],
+                    item["name"],
+                    item["price"],
+                    item["quantity"]
+                ))
+
+        # 4. Return the response expected by index.html.
+        return jsonify({
+            "key_id": key_id,
+            "razorpay_order_id": razorpay_order_id,
+            "amount": total * 100,
+            "currency": "INR",
+            "order_id": local_order_id,
+            "total": total,
+            "items": [
+                {
+                    "name": item["name"],
+                    "price": item["price"],
+                    "quantity": item["quantity"]
+                }
+                for item in order_items
+            ]
+        }), 201
+
+    except Exception:
+        app.logger.exception("Order creation failed.")
+
+        return jsonify({
+            "error": "Could not create your order. Please try again."
+        }), 500
 
 @app.route("/api/orders/verify-payment", methods=["POST"])
 @login_required

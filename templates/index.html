@@ -324,30 +324,40 @@
         <p id="no-search-results" class="empty-search" hidden>No matching menu items found.</p>
 
         <div class="menu-grid" id="menu-grid">
-            {% for item in menu_items %}
-            <article class="menu-card">
-                <p class="category">{{ item.category }}</p>
-                <h3>{{ item.name }}</h3>
-                <p class="price">₹{{ item.price }}</p>
+    {% for item in menu_items %}
+    <article class="menu-card">
+        <p class="category">{{ item.category }}</p>
+        <h3>{{ item.name }}</h3>
+        <p class="price">₹{{ item.price }}</p>
 
-                <button
-                    type="button"
-                    class="add-to-cart"
-                    data-id="{{ item.id }}"
-                    data-name="{{ item.name }}"
-                    data-price="{{ item.price }}"
-                    {% if not item.available %}disabled{% endif %}>
-                    {% if item.available %}
-                        Add to cart
-                    {% else %}
-                        Currently unavailable
-                    {% endif %}
-                </button>
-            </article>
-            {% endfor %}
-        </div>
-    </section>
+        <p class="stock">
+            {% if item.stock > 0 %}
+                Available: {{ item.stock }}
+            {% else %}
+                Out of stock
+            {% endif %}
+        </p>
 
+        <button
+            type="button"
+            class="add-to-cart"
+            data-id="{{ item.id }}"
+            data-name="{{ item.name }}"
+            data-price="{{ item.price }}"
+            data-stock="{{ item.stock }}"
+            {% if not item.available or item.stock <= 0 %}disabled{% endif %}>
+
+            {% if not item.available %}
+                Currently unavailable
+            {% elif item.stock <= 0 %}
+                Out of stock
+            {% else %}
+                Add to cart
+            {% endif %}
+        </button>
+    </article>
+    {% endfor %}
+</div>
     <section class="panel" style="margin-top: 28px;">
         <h2>Your Cart</h2>
 
@@ -527,6 +537,8 @@ function renderCart() {
         plusButton.textContent = "+";
         plusButton.setAttribute("aria-label", "Add one " + item.name);
 
+        plusButton.disabled = item.quantity >= item.stock;
+
         plusButton.addEventListener("click", function () {
             changeQuantity(item.id, 1);
         });
@@ -544,18 +556,37 @@ function renderCart() {
     totalElement.textContent = total;
 }
 
+
 function addToCart(id, name, price) {
+    const button = document.querySelector(
+        '.add-to-cart[data-id="' + id + '"]'
+    );
+
+    if (!button) {
+        return;
+    }
+
+    const stock = Number.parseInt(button.dataset.stock, 10);
+
+    if (!Number.isInteger(stock) || stock <= 0) {
+        showCartMessage("This item is out of stock.", true);
+        return;
+    }
+
     if (!cart[id]) {
         cart[id] = {
             id: id,
             name: name,
             price: price,
-            quantity: 0
+            quantity: 0,
+            stock: stock
         };
     }
 
-    if (cart[id].quantity >= 50) {
-        showCartMessage("Maximum quantity per item is 50.", true);
+    cart[id].stock = stock;
+
+    if (cart[id].quantity >= stock) {
+        showCartMessage("Only " + stock + " units are available.", true);
         return;
     }
 
@@ -565,8 +596,17 @@ function addToCart(id, name, price) {
     renderCart();
 }
 
+
 function changeQuantity(id, change) {
     if (!cart[id]) {
+        return;
+    }
+
+    if (change > 0 && cart[id].quantity >= cart[id].stock) {
+        showCartMessage(
+            "Only " + cart[id].stock + " units are available.",
+            true
+        );
         return;
     }
 
@@ -579,16 +619,6 @@ function changeQuantity(id, change) {
     showCartMessage("", false);
     renderCart();
 }
-
-function clearCart() {
-    Object.keys(cart).forEach(function (id) {
-        delete cart[id];
-    });
-
-    showCartMessage("", false);
-    renderCart();
-}
-
 
 function showOrderQr(orderId, token) {
     const qrContainer = document.getElementById("order-qr");
@@ -683,7 +713,7 @@ async function checkOrderStatus(orderId, token) {
         console.error("Order status check failed:", error);
     }
 }
-
+ 
 
 
 async function continueOrder() {
