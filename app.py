@@ -1012,6 +1012,92 @@ def booking():
 # ADMIN DASHBOARD AND ANALYTICS
 # --------------------------------------------------
 
+@app.route("/admin")
+@staff_login_required
+def admin():
+    today = datetime.now(INDIA_TZ).date()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            SELECT id, total, status, payment_status, created_at
+            FROM orders
+            ORDER BY id DESC
+        """)
+
+        columns = [column[0] for column in cur.description]
+        orders = [
+            dict(zip(columns, row))
+            for row in cur.fetchall()
+        ]
+
+        order_items_by_id = {}
+
+        for order in orders:
+            cur.execute("""
+                SELECT item_name, unit_price, quantity
+                FROM order_items
+                WHERE order_id = %s
+            """, (order["id"],))
+
+            item_columns = [column[0] for column in cur.description]
+            order_items_by_id[order["id"]] = [
+                dict(zip(item_columns, row))
+                for row in cur.fetchall()
+            ]
+
+        today_orders = 0
+        today_sales = 0
+        items_sold_today = 0
+
+        for order in orders:
+            try:
+                order_datetime = datetime.fromisoformat(
+                    str(order["created_at"])
+                )
+
+                if order_datetime.tzinfo is None:
+                    order_datetime = order_datetime.replace(tzinfo=UTC_TZ)
+
+                order_date_india = order_datetime.astimezone(
+                    INDIA_TZ
+                ).date()
+
+            except (ValueError, TypeError):
+                app.logger.warning(
+                    "Could not interpret created_at for order %s",
+                    order["id"]
+                )
+                continue
+
+            if order_date_india == today:
+                today_orders += 1
+
+                if order["payment_status"] == "paid":
+                    today_sales += order["total"]
+
+                    for item in order_items_by_id[order["id"]]:
+                        items_sold_today += item["quantity"]
+
+        return render_template(
+            "admin.html",
+            orders=orders,
+            order_items_by_id=order_items_by_id,
+            today_orders=today_orders,
+            today_sales=today_sales,
+            items_sold_today=items_sold_today,
+        )
+
+    except Exception:
+        app.logger.exception("Could not load admin dashboard.")
+        raise
+
+    finally:
+        cur.close()
+        conn.close()
+
 
 @app.route("/api/admin/menu", methods=["GET"])
 @staff_login_required
