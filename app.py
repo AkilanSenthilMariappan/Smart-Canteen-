@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
-import sqlite3
+from database import get_connection
 import secrets
 import os
 import re
@@ -63,8 +63,8 @@ OTP_LIFETIME_SECONDS = 5 * 60
 OTP_RESEND_SECONDS = 60
 OTP_MAX_ATTEMPTS = 5
 
-DATABASE = Path(__file__).with_name("canteen.db")
-STUDENT_DATABASE = Path(__file__).with_name("student.db")
+
+
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 
@@ -89,114 +89,37 @@ menu_items = [
 
 
 def init_database():
-    """Create tables and safely upgrade the existing database."""
-    with sqlite3.connect(DATABASE) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS students (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                name TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    """Initialize and verify the Smart Canteen PostgreSQL database."""
+    conn = get_connection()
+    cur = conn.cursor()
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS staff_users (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                password_hash TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS email_otps (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL COLLATE NOCASE,
-                purpose TEXT NOT NULL,
-                otp_hash TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                total INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS order_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER NOT NULL,
-                menu_item_id INTEGER NOT NULL,
-                item_name TEXT NOT NULL,
-                unit_price INTEGER NOT NULL,
-                quantity INTEGER NOT NULL,
-                FOREIGN KEY (order_id) REFERENCES orders(id)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS menu_items (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                price INTEGER NOT NULL CHECK (price >= 0),
-                category TEXT NOT NULL,
-                available INTEGER NOT NULL DEFAULT 1
-                    CHECK (available IN (0, 1)),
-                stock INTEGER NOT NULL DEFAULT 0
-                    CHECK (stock >= 0),
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # Read existing order columns.
-        columns = {
-            row[1]
-            for row in conn.execute(
-                "PRAGMA table_info(orders)"
-            ).fetchall()
+    try:
+        # Verify that all required PostgreSQL tables exist.
+        required_tables = {
+            "students",
+            "staff_users",
+            "email_otps",
+            "orders",
+            "order_items",
+            "menu_items"
         }
 
-        # Preserve existing order data and add missing columns.
-        migrations = {
-            "student_id": (
-                "ALTER TABLE orders ADD COLUMN "
-                "student_id INTEGER REFERENCES students(id)"
-            ),
-            "qr_token": (
-                "ALTER TABLE orders ADD COLUMN qr_token TEXT"
-            ),
-            "pickup_code": (
-                "ALTER TABLE orders ADD COLUMN pickup_code TEXT"
-            ),
-            "payment_status": (
-                "ALTER TABLE orders ADD COLUMN "
-                "payment_status TEXT NOT NULL DEFAULT 'unpaid'"
-            ),
-            "razorpay_order_id": (
-                "ALTER TABLE orders ADD COLUMN razorpay_order_id TEXT"
-            ),
-            "razorpay_payment_id": (
-                "ALTER TABLE orders ADD COLUMN razorpay_payment_id TEXT"
-            ),
-            "payment_verified_at": (
-                "ALTER TABLE orders ADD COLUMN payment_verified_at TEXT"
-            ),
-        }
+        cur.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+        """)
 
-        for column, sql in migrations.items():
-            if column not in columns:
-                conn.execute(sql)
+        existing_tables = {row[0] for row in cur.fetchall()}
+        missing_tables = required_tables - existing_tables
+
+        if missing_tables:
+            raise RuntimeError(
+                f"Missing PostgreSQL tables: {', '.join(sorted(missing_tables))}"
+            )
 
         # Preserve historical collected orders.
-        conn.execute("""
+        cur.execute("""
             UPDATE orders
             SET payment_status = 'legacy'
             WHERE status = 'successful'
@@ -204,37 +127,36 @@ def init_database():
               AND razorpay_payment_id IS NULL
         """)
 
-        # Prevent duplicate Razorpay references.
-        conn.execute("""
+        # Prevent duplicate QR and payment references.
+        cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_qr_token
             ON orders(qr_token)
         """)
 
-        conn.execute("""
+        cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_pickup_code
             ON orders(pickup_code)
         """)
 
-        conn.execute("""
+        cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_razorpay_order
             ON orders(razorpay_order_id)
         """)
 
-        conn.execute("""
+        cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_razorpay_payment
             ON orders(razorpay_payment_id)
         """)
 
-        # Seed the existing menu only when the menu table is empty.
-        menu_count = conn.execute(
-            "SELECT COUNT(*) FROM menu_items"
-        ).fetchone()[0]
+        # Seed the menu only if the PostgreSQL menu table is empty.
+        cur.execute("SELECT COUNT(*) FROM menu_items")
+        menu_count = cur.fetchone()[0]
 
         if menu_count == 0:
-            conn.executemany("""
+            cur.executemany("""
                 INSERT INTO menu_items
                     (id, name, price, category, available, stock)
-                VALUES (?, ?, ?, ?, ?, 0)
+                VALUES (%s, %s, %s, %s, %s, 0)
             """, [
                 (
                     item["id"],
@@ -246,20 +168,34 @@ def init_database():
                 for item in menu_items
             ])
 
+        # Synchronize the menu identity sequence after explicit IDs.
+        cur.execute("""
+            SELECT setval(
+                pg_get_serial_sequence('menu_items', 'id'),
+                COALESCE(MAX(id), 1),
+                MAX(id) IS NOT NULL
+            )
+            FROM menu_items
+        """)
+
+        conn.commit()
+        app.logger.info("PostgreSQL database initialization successful.")
+
+    except Exception:
+        conn.rollback()
+        app.logger.exception("PostgreSQL database initialization failed")
+        raise
+
+    finally:
+        cur.close()
+        conn.close()
+
+
 # --------------------------------------------------
 # PICKUP CODE
 # --------------------------------------------------
 
-def generate_pickup_code(connection):
-    """Generate a unique six-digit code, stored as TEXT to preserve leading zeroes."""
-    for _ in range(50):
-        code = f"{secrets.randbelow(1_000_000):06d}"
-        existing = connection.execute(
-            "SELECT 1 FROM orders WHERE pickup_code = ?", (code,)
-        ).fetchone()
-        if existing is None:
-            return code
-    raise RuntimeError("Could not generate a unique pickup code.")
+
 
 
 # --------------------------------------------------
@@ -432,6 +368,7 @@ def logout():
 # EMAIL OTP
 # --------------------------------------------------
 
+
 @app.route("/api/auth/request-otp", methods=["POST"])
 def request_registration_otp():
     data = request.get_json(silent=True) or {}
@@ -440,64 +377,119 @@ def request_registration_otp():
 
     if purpose not in ("register", "reset"):
         return json_error("Invalid verification request.")
+
     if not valid_college_email(email):
-        return json_error(f"Use your college email ending in @{COLLEGE_EMAIL_DOMAIN}.")
+        return json_error(
+            f"Use your college email ending in @{COLLEGE_EMAIL_DOMAIN}."
+        )
 
     now = datetime.now(UTC_TZ)
-    with sqlite3.connect(DATABASE) as conn:
-        student = conn.execute(
-            "SELECT id FROM students WHERE email = ?", (email,)
-        ).fetchone()
-        app.logger.info("Student account found in database: %s", student is not None)
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            "SELECT id FROM students WHERE email = %s",
+            (email,)
+        )
+        student = cur.fetchone()
+
+        app.logger.info(
+            "Student account found in database: %s",
+            student is not None
+        )
+
         if purpose == "register" and student:
-            return json_error("An account already exists for this email. Please sign in.", 409)
+            return json_error(
+                "An account already exists for this email. Please sign in.",
+                409
+            )
+
         if purpose == "reset" and not student:
             return jsonify({
                 "message": "If the account exists, a verification code will be sent."
             }), 200
 
-        recent = conn.execute("""
+        cur.execute("""
             SELECT created_at FROM email_otps
-            WHERE email = ? AND purpose = ? ORDER BY id DESC LIMIT 1
-        """, (email, purpose)).fetchone()
+            WHERE email = %s AND purpose = %s
+            ORDER BY id DESC LIMIT 1
+        """, (email, purpose))
+
+        recent = cur.fetchone()
+
         if recent:
             try:
                 previous = datetime.fromisoformat(recent[0])
                 elapsed = (now - previous).total_seconds()
+
                 if elapsed < OTP_RESEND_SECONDS:
                     wait = max(1, OTP_RESEND_SECONDS - int(elapsed))
                     return json_error(
-                        f"Please wait {wait} seconds before requesting another code.", 429
+                        f"Please wait {wait} seconds before requesting another code.",
+                        429
                     )
             except ValueError:
                 pass
 
         otp = f"{secrets.randbelow(1_000_000):06d}"
-        conn.execute(
-            "DELETE FROM email_otps WHERE email = ? AND purpose = ?", (email, purpose)
+
+        cur.execute(
+            "DELETE FROM email_otps WHERE email = %s AND purpose = %s",
+            (email, purpose)
         )
-        conn.execute("""
+
+        cur.execute("""
             INSERT INTO email_otps
                 (email, purpose, otp_hash, expires_at, attempts, created_at)
-            VALUES (?, ?, ?, ?, 0, ?)
+            VALUES (%s, %s, %s, %s, 0, %s)
         """, (
-            email, purpose, otp_digest(email, purpose, otp),
+            email,
+            purpose,
+            otp_digest(email, purpose, otp),
             (now + timedelta(seconds=OTP_LIFETIME_SECONDS)).isoformat(),
             now.isoformat()
         ))
 
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        app.logger.exception("Could not create OTP record")
+        return json_error("Could not create a verification code. Please try again.", 500)
+
+    finally:
+        cur.close()
+        conn.close()
+
     try:
         send_email_otp(email, otp, purpose)
+
     except Exception as exc:
         app.logger.exception("OTP email delivery failed")
-        with sqlite3.connect(DATABASE) as conn:
-            conn.execute(
-                "DELETE FROM email_otps WHERE email = ? AND purpose = ?", (email, purpose)
+
+        cleanup_conn = get_connection()
+        cleanup_cur = cleanup_conn.cursor()
+
+        try:
+            cleanup_cur.execute(
+                "DELETE FROM email_otps WHERE email = %s AND purpose = %s",
+                (email, purpose)
             )
+            cleanup_conn.commit()
+        except Exception:
+            cleanup_conn.rollback()
+            app.logger.exception("Could not remove failed OTP record")
+        finally:
+            cleanup_cur.close()
+            cleanup_conn.close()
+
         if isinstance(exc, RuntimeError):
             return json_error(str(exc), 503)
+
         return json_error(
-            "Could not send the email. Check the Resend API settings and sender verification, then try again.", 503
+            "Could not send the email. Check the Resend API settings and sender verification, then try again.",
+            503
         )
 
     return jsonify({
@@ -506,40 +498,81 @@ def request_registration_otp():
     }), 200
 
 
+
+
 def consume_otp(email, purpose, otp):
     now = datetime.now(UTC_TZ)
-    with sqlite3.connect(DATABASE) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("""
-            SELECT id, otp_hash, expires_at, attempts FROM email_otps
-            WHERE email = ? AND purpose = ? ORDER BY id DESC LIMIT 1
-        """, (email, purpose)).fetchone()
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            SELECT id, otp_hash, expires_at, attempts
+            FROM email_otps
+            WHERE email = %s AND purpose = %s
+            ORDER BY id DESC
+            LIMIT 1
+            FOR UPDATE
+        """, (email, purpose))
+
+        row = cur.fetchone()
 
         if row is None:
+            conn.commit()
             return False, "Request a new verification code."
 
+        otp_id, otp_hash, expires_at, attempts = row
+
         try:
-            expires = datetime.fromisoformat(row["expires_at"])
-        except ValueError:
+            expires = datetime.fromisoformat(expires_at)
+        except (ValueError, TypeError):
             expires = now
 
         if now >= expires:
-            conn.execute("DELETE FROM email_otps WHERE id = ?", (row["id"],))
-            return False, "This code has expired. Request a new one."
-        if row["attempts"] >= OTP_MAX_ATTEMPTS:
-            conn.execute("DELETE FROM email_otps WHERE id = ?", (row["id"],))
-            return False, "Too many incorrect attempts. Request a new code."
-        if not hmac.compare_digest(row["otp_hash"], otp_digest(email, purpose, otp)):
-            conn.execute(
-                "UPDATE email_otps SET attempts = attempts + 1 WHERE id = ?",
-                (row["id"],)
+            cur.execute(
+                "DELETE FROM email_otps WHERE id = %s",
+                (otp_id,)
             )
-            remaining = OTP_MAX_ATTEMPTS - row["attempts"] - 1
+            conn.commit()
+            return False, "This code has expired. Request a new one."
+
+        if attempts >= OTP_MAX_ATTEMPTS:
+            cur.execute(
+                "DELETE FROM email_otps WHERE id = %s",
+                (otp_id,)
+            )
+            conn.commit()
+            return False, "Too many incorrect attempts. Request a new code."
+
+        if not hmac.compare_digest(
+            otp_hash,
+            otp_digest(email, purpose, otp)
+        ):
+            cur.execute(
+                "UPDATE email_otps SET attempts = attempts + 1 WHERE id = %s",
+                (otp_id,)
+            )
+            conn.commit()
+
+            remaining = OTP_MAX_ATTEMPTS - attempts - 1
             return False, f"Incorrect code. You have {remaining} attempt(s) left."
 
-        conn.execute("DELETE FROM email_otps WHERE id = ?", (row["id"],))
+        cur.execute(
+            "DELETE FROM email_otps WHERE id = %s",
+            (otp_id,)
+        )
+
+        conn.commit()
         return True, "Email verified."
+
+    except Exception:
+        conn.rollback()
+        app.logger.exception("OTP verification database error")
+        return False, "Could not verify the code. Please try again."
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/auth/verify-otp", methods=["POST"])
@@ -584,6 +617,7 @@ def verification_is_valid(email, purpose):
 # STUDENT REGISTER / LOGIN / PASSWORD RESET
 # --------------------------------------------------
 
+
 @app.route("/api/auth/register", methods=["POST"])
 def register_student():
     data = request.get_json(silent=True) or {}
@@ -592,23 +626,55 @@ def register_student():
     password = data.get("password", "")
 
     if not valid_college_email(email):
-        return json_error(f"Use your college email ending in @{COLLEGE_EMAIL_DOMAIN}.")
+        return json_error(
+            f"Use your college email ending in @{COLLEGE_EMAIL_DOMAIN}."
+        )
+
     if not verification_is_valid(email, "register"):
-        return json_error("Verify your email with a fresh OTP before creating your account.", 403)
+        return json_error(
+            "Verify your email with a fresh OTP before creating your account.",
+            403
+        )
+
     if not name or len(name) > 80:
         return json_error("Enter a name between 1 and 80 characters.")
+
     if not isinstance(password, str) or len(password) < 8 or len(password) > 128:
         return json_error("Password must contain between 8 and 128 characters.")
 
+    conn = get_connection()
+    cur = conn.cursor()
+
     try:
-        with sqlite3.connect(DATABASE) as conn:
-            cursor = conn.execute(
-                "INSERT INTO students (email, name, password_hash) VALUES (?, ?, ?)",
-                (email, name, generate_password_hash(password))
+        cur.execute("""
+            INSERT INTO students (email, name, password_hash)
+            VALUES (%s, %s, %s)
+            RETURNING id
+        """, (
+            email,
+            name,
+            generate_password_hash(password)
+        ))
+
+        student_id = cur.fetchone()[0]
+        conn.commit()
+
+    except Exception as exc:
+        conn.rollback()
+
+        # PostgreSQL unique-constraint violation
+        if getattr(exc, "sqlstate", None) == "23505":
+            return json_error(
+                "An account already exists for this email. Please sign in.",
+                409
             )
-            student_id = cursor.lastrowid
-    except sqlite3.IntegrityError:
-        return json_error("An account already exists for this email. Please sign in.", 409)
+
+        app.logger.exception("Student registration failed")
+        return json_error("Could not create your account. Please try again.", 500)
+
+    finally:
+        cur.close()
+        conn.close()
 
     clear_student_session()
     session.permanent = True
@@ -618,10 +684,12 @@ def register_student():
     session.pop("verified_email", None)
     session.pop("verified_purpose", None)
     session.pop("verified_at", None)
+
     return jsonify({
         "message": "Account created successfully.",
         "redirect": url_for("home")
     }), 201
+
 
 
 @app.route("/api/auth/login", methods=["POST"])
@@ -633,32 +701,45 @@ def login_student():
     if not valid_college_email(email) or not isinstance(password, str):
         return json_error("Enter a valid college email and password.")
 
-    with sqlite3.connect(DATABASE) as conn:
-        conn.row_factory = sqlite3.Row
-        student = conn.execute(
-            "SELECT id, email, name, password_hash FROM students WHERE email = ?",
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            SELECT id, email, name, password_hash
+            FROM students
+            WHERE email = %s
+            """,
             (email,)
-        ).fetchone()
-        password_matches = (
-            check_password_hash(student["password_hash"], password)
+        )
+        student = cur.fetchone()
+
+    except Exception:
+        app.logger.exception("Student login database query failed")
+        return json_error("Unable to sign in right now. Please try again.", 500)
+
+    finally:
+        cur.close()
+        conn.close()
+
+    password_matches = (
+        check_password_hash(student[3], password)
         if student is not None
         else False
-)
+    )
 
-    app.logger.warning(
-        "LOGIN DIAGNOSTIC: student_found=%s password_matches=%s",
-        student is not None,
-        password_matches
-)
+    app.logger.info("Student login attempt processed.")
 
-    if student is None or not check_password_hash(student["password_hash"], password):
+    if student is None or not password_matches:
         return json_error("Email or password is incorrect.", 401)
 
     clear_student_session()
     session.permanent = True
-    session["student_id"] = student["id"]
-    session["student_email"] = student["email"]
-    session["student_name"] = student["name"]
+    session["student_id"] = student[0]
+    session["student_email"] = student[1]
+    session["student_name"] = student[2]
+
     return jsonify({
         "message": "Signed in successfully.",
         "redirect": url_for("home")
@@ -672,23 +753,53 @@ def reset_student_password():
     password = data.get("password", "")
 
     if not valid_college_email(email) or not verification_is_valid(email, "reset"):
-        return json_error("Verify your email with a fresh OTP before resetting your password.", 403)
+        return json_error(
+            "Verify your email with a fresh OTP before resetting your password.",
+            403
+        )
+
     if not isinstance(password, str) or len(password) < 8 or len(password) > 128:
         return json_error("Password must contain between 8 and 128 characters.")
 
-    with sqlite3.connect(DATABASE) as conn:
-        cursor = conn.execute(
-            "UPDATE students SET password_hash = ? WHERE email = ?",
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            UPDATE students
+            SET password_hash = %s
+            WHERE email = %s
+            """,
             (generate_password_hash(password), email)
         )
-        if cursor.rowcount == 0:
-            return json_error("Could not reset the password. Check the email and try again.", 404)
+
+        if cur.rowcount == 0:
+            conn.rollback()
+            return json_error(
+                "Could not reset the password. Check the email and try again.",
+                404
+            )
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        app.logger.exception("Student password reset failed")
+        return json_error("Unable to reset your password. Please try again.", 500)
+
+    finally:
+        cur.close()
+        conn.close()
 
     clear_student_session()
     session.pop("verified_email", None)
     session.pop("verified_purpose", None)
     session.pop("verified_at", None)
-    return jsonify({"message": "Password reset successfully. You can now sign in."}), 200
+
+    return jsonify({
+        "message": "Password reset successfully. You can now sign in."
+    }), 200
 
 
 @app.route("/api/auth/me", methods=["GET"])
@@ -706,24 +817,53 @@ def current_student():
 def update_student_profile():
     data = request.get_json(silent=True) or {}
     name = str(data.get("name", "")).strip()
+
     if not name or len(name) > 80:
         return json_error("Enter a name between 1 and 80 characters.")
 
-    with sqlite3.connect(DATABASE) as conn:
-        cursor = conn.execute(
-            "UPDATE students SET name = ? WHERE id = ?",
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            UPDATE students
+            SET name = %s
+            WHERE id = %s
+            """,
             (name, session["student_id"])
         )
-        if cursor.rowcount != 1:
-            return json_error("Could not update your profile. Please sign in again.", 404)
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return json_error(
+                "Could not update your profile. Please sign in again.",
+                404
+            )
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        app.logger.exception("Student profile update failed")
+        return json_error("Unable to update your profile. Please try again.", 500)
+
+    finally:
+        cur.close()
+        conn.close()
 
     session["student_name"] = name
-    return jsonify({"message": "Your name has been updated.", "name": name}), 200
+
+    return jsonify({
+        "message": "Your name has been updated.",
+        "name": name
+    }), 200
 
 
 # --------------------------------------------------
 # SHARED STAFF LOGIN
 # --------------------------------------------------
+
 
 @app.route("/staff/login", methods=["GET", "POST"])
 def staff_login_page():
@@ -731,32 +871,52 @@ def staff_login_page():
         return redirect(url_for("admin"))
 
     error = None
+
     if request.method == "POST":
         username = str(request.form.get("username", "")).strip()
         password = request.form.get("password", "")
 
-        with sqlite3.connect(DATABASE) as conn:
-            conn.row_factory = sqlite3.Row
-            staff = conn.execute(
-                "SELECT id, username, password_hash FROM staff_users WHERE id = 1"
-            ).fetchone()
+        conn = get_connection()
+        cur = conn.cursor()
+
+        try:
+            cur.execute(
+                """
+                SELECT id, username, password_hash
+                FROM staff_users
+                WHERE id = %s
+                """,
+                (1,)
+            )
+            staff = cur.fetchone()
+
+        except Exception:
+            app.logger.exception("Staff login database query failed")
+            error = "Unable to sign in right now. Please try again."
+            staff = None
+
+        finally:
+            cur.close()
+            conn.close()
 
         if (
             staff is None
             or not isinstance(password, str)
-            or not hmac.compare_digest(username.casefold(), staff["username"].casefold())
-            or not check_password_hash(staff["password_hash"], password)
+            or not hmac.compare_digest(username.casefold(), staff[1].casefold())
+            or not check_password_hash(staff[2], password)
         ):
-            error = "Username or password is incorrect."
+            if error is None:
+                error = "Username or password is incorrect."
         else:
             # Keep any student login in the same browser session.
             clear_staff_session()
             session.permanent = True
-            session["staff_id"] = staff["id"]
-            session["staff_username"] = staff["username"]
+            session["staff_id"] = staff[0]
+            session["staff_username"] = staff[1]
             return redirect(url_for("admin"))
 
     return render_template("staff_login.html", error=error)
+
 
 
 @app.route("/staff/logout", methods=["POST"])
@@ -773,14 +933,29 @@ def staff_logout():
 @app.route("/")
 @login_required
 def home():
-    with sqlite3.connect(DATABASE) as conn:
-        conn.row_factory = sqlite3.Row
+    conn = get_connection()
+    cur = conn.cursor()
 
-        menu_items = conn.execute("""
+    try:
+        cur.execute("""
             SELECT id, name, price, category, available, stock
             FROM menu_items
             ORDER BY id
-        """).fetchall()
+        """)
+
+        columns = [column[0] for column in cur.description]
+        menu_items = [
+            dict(zip(columns, row))
+            for row in cur.fetchall()
+        ]
+
+    except Exception:
+        app.logger.exception("Failed to fetch menu items")
+        raise
+
+    finally:
+        cur.close()
+        conn.close()
 
     return render_template(
         "index.html",
@@ -789,23 +964,28 @@ def home():
         student_email=session.get("student_email", "")
     )
 
-
 @app.route("/api/menu", methods=["GET"])
 @login_required
 def get_student_menu():
-    try:
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
+    conn = get_connection()
+    cur = conn.cursor()
 
-            items = connection.execute("""
-                SELECT id, name, price, category, available, stock
-                FROM menu_items
-                ORDER BY id
-            """).fetchall()
+    try:
+        cur.execute("""
+            SELECT id, name, price, category, available, stock
+            FROM menu_items
+            ORDER BY id
+        """)
+
+        columns = [column[0] for column in cur.description]
+        items = [
+            dict(zip(columns, row))
+            for row in cur.fetchall()
+        ]
 
         return jsonify({
             "success": True,
-            "menu_items": [dict(item) for item in items]
+            "menu_items": items
         }), 200
 
     except Exception:
@@ -813,6 +993,10 @@ def get_student_menu():
         return jsonify({
             "error": "Could not refresh menu."
         }), 500
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/booking")
@@ -829,100 +1013,44 @@ def booking():
 # --------------------------------------------------
 
 
-@app.route("/admin")
+@app.route("/api/admin/menu", methods=["GET"])
 @staff_login_required
-def admin():
-    today = datetime.now(INDIA_TZ).date()
+def admin_get_menu():
+    conn = get_connection()
+    cur = conn.cursor()
 
-    with sqlite3.connect(DATABASE, timeout=10) as connection:
-        connection.row_factory = sqlite3.Row
+    try:
+        cur.execute("""
+            SELECT id, name, price, category, available, stock
+            FROM menu_items
+            ORDER BY category, name
+        """)
 
-        orders = connection.execute("""
-            SELECT id, total, status, payment_status, created_at
-            FROM orders
-            ORDER BY id DESC
-        """).fetchall()
+        columns = [column[0] for column in cur.description]
+        menu_items = [
+            dict(zip(columns, row))
+            for row in cur.fetchall()
+        ]
 
-        order_items_by_id = {}
+        return jsonify({
+            "success": True,
+            "menu_items": menu_items
+        }), 200
 
-        for order in orders:
-            items = connection.execute("""
-                SELECT item_name, unit_price, quantity
-                FROM order_items
-                WHERE order_id = ?
-            """, (order["id"],)).fetchall()
+    except Exception:
+        app.logger.exception("Could not fetch admin menu.")
+        return jsonify({
+            "error": "Could not load menu items."
+        }), 500
 
-            order_items_by_id[order["id"]] = items
-
-    today_orders = 0
-    today_sales = 0
-    items_sold_today = 0
-
-    for order in orders:
-        try:
-            order_datetime = datetime.fromisoformat(order["created_at"])
-
-            if order_datetime.tzinfo is None:
-                order_datetime = order_datetime.replace(tzinfo=UTC_TZ)
-
-            order_date_india = order_datetime.astimezone(INDIA_TZ).date()
-
-        except (ValueError, TypeError):
-            app.logger.warning(
-                "Could not interpret created_at for order %s",
-                order["id"]
-            )
-            continue
-
-        if order_date_india == today:
-            today_orders += 1
-
-            # Only captured payments count as sales.
-            if order["payment_status"] == "paid":
-                today_sales += order["total"]
-
-                for item in order_items_by_id[order["id"]]:
-                    items_sold_today += item["quantity"]
-
-    return render_template(
-        "admin.html",
-        orders=orders,
-        order_items_by_id=order_items_by_id,
-        today_orders=today_orders,
-        today_sales=today_sales,
-        items_sold_today=items_sold_today,
-    )
+    finally:
+        cur.close()
+        conn.close()
 
 # --------------------------------------------------
 # CREATE STUDENT ORDER
 # --------------------------------------------------
 
-@app.route("/api/admin/menu", methods=["GET"])
-@staff_login_required
-def admin_get_menu():
-    try:
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
-
-            menu_items = connection.execute("""
-                SELECT id, name, price, category, available, stock
-                FROM menu_items
-                ORDER BY category, name
-            """).fetchall()
-
-        return jsonify({
-            "success": True,
-            "menu_items": [
-                dict(item) for item in menu_items
-            ]
-        }), 200
-
-    except Exception:
-        app.logger.exception("Could not fetch admin menu.")
-
-        return jsonify({
-            "error": "Could not load menu items."
-        }), 500
 
 @app.route("/api/admin/menu", methods=["POST"])
 @staff_login_required
@@ -953,38 +1081,53 @@ def admin_add_menu_item():
     if type(available) not in (bool, int) or available not in (0, 1, False, True):
         return jsonify({"error": "Invalid availability value."}), 400
 
+    conn = None
+    cur = None
+
     try:
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            cursor = connection.execute("""
-                INSERT INTO menu_items
-                    (name, price, category, available, stock)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                name.strip(),
-                price,
-                category.strip(),
-                int(available),
-                stock
-            ))
+        conn = get_connection()
+        cur = conn.cursor()
 
-            item_id = cursor.lastrowid
+        cur.execute("""
+            INSERT INTO menu_items
+                (name, price, category, available, stock)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, name, price, category, available, stock
+        """, (
+            name.strip(),
+            price,
+            category.strip(),
+            int(available),
+            stock
+        ))
 
-            connection.row_factory = sqlite3.Row
-            item = connection.execute("""
-                SELECT id, name, price, category, available, stock
-                FROM menu_items
-                WHERE id = ?
-            """, (item_id,)).fetchone()
+        columns = [column[0] for column in cur.description]
+        item = dict(zip(columns, cur.fetchone()))
+
+        conn.commit()
 
         return jsonify({
             "success": True,
             "message": "Menu item added successfully.",
-            "menu_item": dict(item)
+            "menu_item": item
         }), 201
 
     except Exception:
+        if conn is not None:
+            conn.rollback()
+
         app.logger.exception("Could not add menu item.")
         return jsonify({"error": "Could not add menu item."}), 500
+
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
+
+
+
+
 
 @app.route("/api/admin/menu/<int:item_id>", methods=["PUT"])
 @staff_login_required
@@ -1015,51 +1158,74 @@ def admin_update_menu_item(item_id):
     if type(available) not in (bool, int) or available not in (0, 1, False, True):
         return jsonify({"error": "Invalid availability value."}), 400
 
+    conn = None
+    cur = None
+
     try:
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            cursor = connection.execute("""
-                UPDATE menu_items
-                SET name = ?,
-                    price = ?,
-                    category = ?,
-                    stock = ?,
-                    available = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (
-                name.strip(),
-                price,
-                category.strip(),
-                stock,
-                int(available),
-                item_id
-            ))
+        conn = get_connection()
+        cur = conn.cursor()
 
-            if cursor.rowcount == 0:
-                return jsonify({"error": "Menu item not found."}), 404
+        cur.execute("""
+            UPDATE menu_items
+            SET name = %s,
+                price = %s,
+                category = %s,
+                stock = %s,
+                available = %s,
+                updated_at = CURRENT_TIMESTAMP::TEXT
+            WHERE id = %s
+        """, (
+            name.strip(),
+            price,
+            category.strip(),
+            stock,
+            int(available),
+            item_id
+        ))
 
-            connection.row_factory = sqlite3.Row
+        if cur.rowcount == 0:
+            conn.rollback()
+            return jsonify({"error": "Menu item not found."}), 404
 
-            item = connection.execute("""
-                SELECT id, name, price, category, available, stock
-                FROM menu_items
-                WHERE id = ?
-            """, (item_id,)).fetchone()
+        cur.execute("""
+            SELECT id, name, price, category, available, stock
+            FROM menu_items
+            WHERE id = %s
+        """, (item_id,))
+
+        item = cur.fetchone()
+        conn.commit()
 
         return jsonify({
             "success": True,
             "message": "Menu item updated successfully.",
-            "menu_item": dict(item)
+            "menu_item": {
+                "id": item[0],
+                "name": item[1],
+                "price": item[2],
+                "category": item[3],
+                "available": item[4],
+                "stock": item[5]
+            }
         }), 200
 
     except Exception:
+        if conn is not None:
+            conn.rollback()
+
         app.logger.exception("Could not update menu item.")
         return jsonify({"error": "Could not update menu item."}), 500
 
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 # --------------------------------------------------
 # VERIFY RAZORPAY PAYMENT
 # --------------------------------------------------
+
 
 
 @app.route("/api/orders", methods=["POST"])
@@ -1110,51 +1276,57 @@ def create_order():
         }), 503
 
     try:
-        # 1. Validate menu items and calculate prices from the database.
+        # 1. Validate menu items and calculate prices from PostgreSQL.
         order_items = []
         total = 0
 
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
+        conn = get_connection()
+        cur = conn.cursor()
 
+        try:
             for item_id, quantity in quantities.items():
-                menu_item = connection.execute("""
+                cur.execute("""
                     SELECT id, name, price, stock, available
                     FROM menu_items
-                    WHERE id = ?
-                """, (item_id,)).fetchone()
+                    WHERE id = %s
+                """, (item_id,))
+
+                menu_item = cur.fetchone()
 
                 if menu_item is None:
                     return jsonify({
                         "error": "A selected menu item was not found."
                     }), 400
 
-                if not menu_item["available"]:
+                menu_id, name, price, stock, available = menu_item
+
+                if not available:
                     return jsonify({
-                        "error": f'{menu_item["name"]} is unavailable.'
+                        "error": f"{name} is unavailable."
                     }), 409
 
-                if menu_item["stock"] < quantity:
+                if stock < quantity:
                     return jsonify({
-                        "error": f'Insufficient stock for {menu_item["name"]}.'
+                        "error": f"Insufficient stock for {name}."
                     }), 409
-
-                price = menu_item["price"]
 
                 if price < 0:
                     return jsonify({
                         "error": "Invalid menu price."
                     }), 400
 
-                subtotal = price * quantity
-                total += subtotal
+                total += price * quantity
 
                 order_items.append({
-                    "id": menu_item["id"],
-                    "name": menu_item["name"],
+                    "id": menu_id,
+                    "name": name,
                     "price": price,
                     "quantity": quantity
                 })
+
+        finally:
+            cur.close()
+            conn.close()
 
         if total <= 0:
             return jsonify({"error": "Invalid order total."}), 400
@@ -1173,11 +1345,12 @@ def create_order():
         if not razorpay_order_id:
             raise RuntimeError("Razorpay did not return an order ID.")
 
-        # 3. Save the unpaid order and its items in SQLite.
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        # 3. Save the unpaid order and its items in PostgreSQL.
+        conn = get_connection()
+        cur = conn.cursor()
 
-            cursor = connection.execute("""
+        try:
+            cur.execute("""
                 INSERT INTO orders (
                     total,
                     status,
@@ -1185,17 +1358,18 @@ def create_order():
                     payment_status,
                     razorpay_order_id
                 )
-                VALUES (?, 'pending', ?, 'unpaid', ?)
+                VALUES (%s, 'pending', %s, 'unpaid', %s)
+                RETURNING id
             """, (
                 total,
                 session["student_id"],
                 razorpay_order_id
             ))
 
-            local_order_id = cursor.lastrowid
+            local_order_id = cur.fetchone()[0]
 
             for item in order_items:
-                connection.execute("""
+                cur.execute("""
                     INSERT INTO order_items (
                         order_id,
                         menu_item_id,
@@ -1203,7 +1377,7 @@ def create_order():
                         unit_price,
                         quantity
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                 """, (
                     local_order_id,
                     item["id"],
@@ -1211,6 +1385,16 @@ def create_order():
                     item["price"],
                     item["quantity"]
                 ))
+
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            cur.close()
+            conn.close()
 
         # 4. Return the response expected by index.html.
         return jsonify({
@@ -1236,7 +1420,6 @@ def create_order():
         return jsonify({
             "error": "Could not create your order. Please try again."
         }), 500
-
 @app.route("/api/orders/verify-payment", methods=["POST"])
 @login_required
 def verify_payment():
@@ -1298,46 +1481,48 @@ def verify_payment():
         response_data = None
         response_status = 200
 
-        # 3. Verify and update everything atomically.
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
-            connection.execute("BEGIN IMMEDIATE")
+        conn = get_connection()
+        cur = conn.cursor()
 
-            order = connection.execute("""
+        try:
+            # 3. Lock the order for atomic payment processing.
+            cur.execute("""
                 SELECT id, total, student_id, payment_status,
                        razorpay_order_id, qr_token, pickup_code,
                        razorpay_payment_id
                 FROM orders
-                WHERE id = ? AND student_id = ?
+                WHERE id = %s AND student_id = %s
+                FOR UPDATE
             """, (
                 order_id,
                 session["student_id"]
-            )).fetchone()
+            ))
+
+            order = cur.fetchone()
 
             if order is None:
-                response_data = {
-                    "error": "Order not found."
-                }
+                conn.rollback()
+                response_data = {"error": "Order not found."}
                 response_status = 404
 
-            elif order["razorpay_order_id"] != razorpay_order_id:
-                response_data = {
-                    "error": "Order ID mismatch."
-                }
+            elif order[4] != razorpay_order_id:
+                conn.rollback()
+                response_data = {"error": "Order ID mismatch."}
                 response_status = 400
 
             elif (
-                payment.get("amount") != order["total"] * 100
+                payment.get("amount") != order[1] * 100
                 or payment.get("currency") != "INR"
             ):
-                response_data = {
-                    "error": "Payment amount mismatch."
-                }
+                conn.rollback()
+                response_data = {"error": "Payment amount mismatch."}
                 response_status = 400
 
             # Already-paid order: never deduct stock again.
-            elif order["payment_status"] == "paid":
-                if order["razorpay_payment_id"] != payment_id:
+            elif order[3] == "paid":
+                conn.rollback()
+
+                if order[7] != payment_id:
                     response_data = {
                         "error": "This order has another payment recorded."
                     }
@@ -1346,12 +1531,13 @@ def verify_payment():
                     response_data = {
                         "success": True,
                         "order_id": order_id,
-                        "qr_token": order["qr_token"],
-                        "pickup_code": order["pickup_code"]
+                        "qr_token": order[5],
+                        "pickup_code": order[6]
                     }
 
             # Do not process other payment states.
-            elif order["payment_status"] != "unpaid":
+            elif order[3] != "unpaid":
+                conn.rollback()
                 response_data = {
                     "error": (
                         "This order cannot be paid. "
@@ -1361,63 +1547,72 @@ def verify_payment():
                 response_status = 409
 
             else:
-                # Fetch all ordered items.
-                order_items = connection.execute("""
+                # 4. Fetch ordered items.
+                cur.execute("""
                     SELECT menu_item_id, quantity
                     FROM order_items
-                    WHERE order_id = ?
-                """, (order_id,)).fetchall()
+                    WHERE order_id = %s
+                    ORDER BY menu_item_id
+                """, (order_id,))
+
+                order_items = cur.fetchall()
 
                 if not order_items:
+                    conn.rollback()
                     response_data = {
-                        "error": "Order items not found. Contact canteen staff."
+                        "error": (
+                            "Order items not found. "
+                            "Contact canteen staff."
+                        )
                     }
                     response_status = 409
 
                 else:
-                    # Check all stock before deducting anything.
+                    # 5. Lock and check every menu item.
                     stock_issue = None
 
                     for order_item in order_items:
-                        menu_item = connection.execute("""
+                        cur.execute("""
                             SELECT name, stock, available
                             FROM menu_items
-                            WHERE id = ?
-                        """, (
-                            order_item["menu_item_id"],
-                        )).fetchone()
+                            WHERE id = %s
+                            FOR UPDATE
+                        """, (order_item[0],))
+
+                        menu_item = cur.fetchone()
 
                         if menu_item is None:
                             stock_issue = "A menu item no longer exists."
                             break
 
-                        if not menu_item["available"]:
+                        if not menu_item[2]:
                             stock_issue = (
-                                f'{menu_item["name"]} is unavailable.'
+                                f"{menu_item[0]} is unavailable."
                             )
                             break
 
-                        if menu_item["stock"] < order_item["quantity"]:
+                        if menu_item[1] < order_item[1]:
                             stock_issue = (
-                                f'{menu_item["name"]} has insufficient stock.'
+                                f"{menu_item[0]} has insufficient stock."
                             )
                             break
 
                     if stock_issue:
-                        # Payment was captured, but the order cannot be fulfilled.
-                        # Record this state for staff refund handling.
-                        connection.execute("""
+                        # Payment was captured, but order cannot be fulfilled.
+                        cur.execute("""
                             UPDATE orders
                             SET payment_status = 'refund_required',
-                                razorpay_payment_id = ?,
-                                payment_verified_at = ?
-                            WHERE id = ?
+                                razorpay_payment_id = %s,
+                                payment_verified_at = %s
+                            WHERE id = %s
                               AND payment_status = 'unpaid'
                         """, (
                             payment_id,
                             datetime.now(INDIA_TZ).isoformat(),
                             order_id
                         ))
+
+                        conn.commit()
 
                         response_data = {
                             "success": False,
@@ -1434,29 +1629,28 @@ def verify_payment():
                         response_status = 409
 
                     else:
-                        # Deduct stock within the same transaction.
+                        # 6. Deduct stock within the same transaction.
                         stock_update_failed = False
 
                         for order_item in order_items:
-                            cursor = connection.execute("""
+                            cur.execute("""
                                 UPDATE menu_items
-                                SET stock = stock - ?
-                                WHERE id = ?
+                                SET stock = stock - %s
+                                WHERE id = %s
                                   AND available = 1
-                                  AND stock >= ?
+                                  AND stock >= %s
                             """, (
-                                order_item["quantity"],
-                                order_item["menu_item_id"],
-                                order_item["quantity"]
+                                order_item[1],
+                                order_item[0],
+                                order_item[1]
                             ))
 
-                            if cursor.rowcount != 1:
+                            if cur.rowcount != 1:
                                 stock_update_failed = True
                                 break
 
                         if stock_update_failed:
-                            # Roll back every stock deduction.
-                            connection.rollback()
+                            conn.rollback()
 
                             response_data = {
                                 "error": (
@@ -1469,37 +1663,32 @@ def verify_payment():
                             response_status = 409
 
                         else:
-                            # Generate collection credentials.
+                            # 7. Generate collection credentials.
                             qr_token = secrets.token_urlsafe(32)
-                            pickup_code = generate_pickup_code(connection)
 
-                            cursor = connection.execute("""
-                                UPDATE orders
-                                SET payment_status = 'paid',
-                                    razorpay_payment_id = ?,
-                                    payment_verified_at = ?,
-                                    qr_token = ?,
-                                    pickup_code = ?
-                                WHERE id = ?
-                                  AND student_id = ?
-                                  AND payment_status = 'unpaid'
-                                  AND razorpay_order_id = ?
-                            """, (
-                                payment_id,
-                                datetime.now(INDIA_TZ).isoformat(),
-                                qr_token,
-                                pickup_code,
-                                order_id,
-                                session["student_id"],
-                                razorpay_order_id
-                            ))
+                            # Generate a unique six-digit pickup code.
+                            pickup_code = None
 
-                            if cursor.rowcount != 1:
-                                connection.rollback()
+                            for _ in range(20):
+                                candidate = str(
+                                    secrets.randbelow(900000) + 100000
+                                )
 
+                                cur.execute("""
+                                    SELECT 1
+                                    FROM orders
+                                    WHERE pickup_code = %s
+                                """, (candidate,))
+
+                                if cur.fetchone() is None:
+                                    pickup_code = candidate
+                                    break
+
+                            if pickup_code is None:
+                                conn.rollback()
                                 response_data = {
                                     "error": (
-                                        "Order update failed. "
+                                        "Could not generate pickup code. "
                                         "Please contact canteen staff."
                                     ),
                                     "payment_captured": True
@@ -1507,12 +1696,56 @@ def verify_payment():
                                 response_status = 409
 
                             else:
-                                response_data = {
-                                    "success": True,
-                                    "order_id": order_id,
-                                    "qr_token": qr_token,
-                                    "pickup_code": pickup_code
-                                }
+                                cur.execute("""
+                                    UPDATE orders
+                                    SET payment_status = 'paid',
+                                        razorpay_payment_id = %s,
+                                        payment_verified_at = %s,
+                                        qr_token = %s,
+                                        pickup_code = %s
+                                    WHERE id = %s
+                                      AND student_id = %s
+                                      AND payment_status = 'unpaid'
+                                      AND razorpay_order_id = %s
+                                """, (
+                                    payment_id,
+                                    datetime.now(INDIA_TZ).isoformat(),
+                                    qr_token,
+                                    pickup_code,
+                                    order_id,
+                                    session["student_id"],
+                                    razorpay_order_id
+                                ))
+
+                                if cur.rowcount != 1:
+                                    conn.rollback()
+
+                                    response_data = {
+                                        "error": (
+                                            "Order update failed. "
+                                            "Please contact canteen staff."
+                                        ),
+                                        "payment_captured": True
+                                    }
+                                    response_status = 409
+
+                                else:
+                                    conn.commit()
+
+                                    response_data = {
+                                        "success": True,
+                                        "order_id": order_id,
+                                        "qr_token": qr_token,
+                                        "pickup_code": pickup_code
+                                    }
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            cur.close()
+            conn.close()
 
         return jsonify(response_data), response_status
 
@@ -1525,7 +1758,6 @@ def verify_payment():
                 "Please contact canteen staff."
             )
         }), 500
-
 
 # --------------------------------------------------
 # VERIFY QR CODE
@@ -1550,77 +1782,97 @@ def verify_order():
 
     qr_token = qr_token.strip()
 
+    conn = None
+    cur = None
+
     try:
         response_data = None
         response_status = 200
 
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
-            connection.execute("BEGIN IMMEDIATE")
+        conn = get_connection()
+        cur = conn.cursor()
 
-            order = connection.execute("""
-                SELECT id, status, payment_status
-                FROM orders
-                WHERE qr_token = ?
-            """, (qr_token,)).fetchone()
+        # Lock this order while verifying collection.
+        cur.execute("""
+            SELECT id, status, payment_status
+            FROM orders
+            WHERE qr_token = %s
+            FOR UPDATE
+        """, (qr_token,))
 
-            if order is None:
+        order = cur.fetchone()
+
+        if order is None:
+            response_data = {
+                "error": "Invalid QR code."
+            }
+            response_status = 404
+
+        elif order[2] != "paid":
+            response_data = {
+                "error": "Payment has not been completed.",
+                "payment_status": order[2]
+            }
+            response_status = 403
+
+        elif order[1] == "successful":
+            response_data = {
+                "error": "This order has already been collected.",
+                "order_id": order[0],
+                "status": order[1]
+            }
+            response_status = 409
+
+        elif order[1] != "pending":
+            response_data = {
+                "error": "This order cannot be collected.",
+                "status": order[1]
+            }
+            response_status = 409
+
+        else:
+            cur.execute("""
+                UPDATE orders
+                SET status = 'successful'
+                WHERE id = %s
+                  AND status = 'pending'
+                  AND payment_status = 'paid'
+            """, (order[0],))
+
+            if cur.rowcount != 1:
                 response_data = {
-                    "error": "Invalid QR code."
-                }
-                response_status = 404
-
-            elif order["payment_status"] != "paid":
-                response_data = {
-                    "error": "Payment has not been completed.",
-                    "payment_status": order["payment_status"]
-                }
-                response_status = 403
-
-            elif order["status"] == "successful":
-                response_data = {
-                    "error": "This order has already been collected.",
-                    "order_id": order["id"],
-                    "status": order["status"]
-                }
-                response_status = 409
-
-            elif order["status"] != "pending":
-                response_data = {
-                    "error": "This order cannot be collected.",
-                    "status": order["status"]
+                    "error": "Order status changed. Please scan again."
                 }
                 response_status = 409
 
             else:
-                cursor = connection.execute("""
-                    UPDATE orders
-                    SET status = 'successful'
-                    WHERE id = ?
-                      AND status = 'pending'
-                      AND payment_status = 'paid'
-                """, (order["id"],))
+                response_data = {
+                    "message": (
+                        "QR verified. The order is ready for handover."
+                    ),
+                    "order_id": order[0],
+                    "status": "successful"
+                }
 
-                if cursor.rowcount != 1:
-                    response_data = {
-                        "error": "Order status changed. Please scan again."
-                    }
-                    response_status = 409
-                else:
-                    response_data = {
-                        "message": "QR verified. The order is ready for handover.",
-                        "order_id": order["id"],
-                        "status": "successful"
-                    }
+        conn.commit()
 
         return jsonify(response_data), response_status
 
-    except sqlite3.Error:
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+
         app.logger.exception("Could not verify the QR code.")
 
         return jsonify({
             "error": "Verification failed. Please try again."
         }), 500
+
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 
 # --------------------------------------------------
@@ -1646,78 +1898,97 @@ def verify_order_code():
             "error": "Enter a valid six-digit pickup code."
         }), 400
 
+    conn = None
+    cur = None
+
     try:
         response_data = None
         response_status = 200
 
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
-            connection.execute("BEGIN IMMEDIATE")
+        conn = get_connection()
+        cur = conn.cursor()
 
-            order = connection.execute("""
-                SELECT id, status, payment_status
-                FROM orders
-                WHERE pickup_code = ?
-            """, (pickup_code,)).fetchone()
+        # Lock the order during pickup verification.
+        cur.execute("""
+            SELECT id, status, payment_status
+            FROM orders
+            WHERE pickup_code = %s
+            FOR UPDATE
+        """, (pickup_code,))
 
-            if order is None:
+        order = cur.fetchone()
+
+        if order is None:
+            response_data = {
+                "error": "Pickup code not found."
+            }
+            response_status = 404
+
+        elif order[2] != "paid":
+            response_data = {
+                "error": "Payment has not been completed.",
+                "payment_status": order[2]
+            }
+            response_status = 403
+
+        elif order[1] == "successful":
+            response_data = {
+                "error": "This order has already been collected.",
+                "order_id": order[0],
+                "status": order[1]
+            }
+            response_status = 409
+
+        elif order[1] != "pending":
+            response_data = {
+                "error": "This order cannot be collected.",
+                "status": order[1]
+            }
+            response_status = 409
+
+        else:
+            cur.execute("""
+                UPDATE orders
+                SET status = 'successful'
+                WHERE id = %s
+                  AND status = 'pending'
+                  AND payment_status = 'paid'
+            """, (order[0],))
+
+            if cur.rowcount != 1:
                 response_data = {
-                    "error": "Pickup code not found."
-                }
-                response_status = 404
-
-            elif order["payment_status"] != "paid":
-                response_data = {
-                    "error": "Payment has not been completed.",
-                    "payment_status": order["payment_status"]
-                }
-                response_status = 403
-
-            elif order["status"] == "successful":
-                response_data = {
-                    "error": "This order has already been collected.",
-                    "order_id": order["id"],
-                    "status": order["status"]
-                }
-                response_status = 409
-
-            elif order["status"] != "pending":
-                response_data = {
-                    "error": "This order cannot be collected.",
-                    "status": order["status"]
+                    "error": (
+                        "Order status changed. Please verify again."
+                    )
                 }
                 response_status = 409
 
             else:
-                cursor = connection.execute("""
-                    UPDATE orders
-                    SET status = 'successful'
-                    WHERE id = ?
-                      AND status = 'pending'
-                      AND payment_status = 'paid'
-                """, (order["id"],))
+                response_data = {
+                    "message": "Pickup code verified successfully.",
+                    "order_id": order[0],
+                    "status": "successful"
+                }
 
-                if cursor.rowcount != 1:
-                    response_data = {
-                        "error": "Order status changed. Please verify again."
-                    }
-                    response_status = 409
-                else:
-                    response_data = {
-                        "message": "Pickup code verified successfully.",
-                        "order_id": order["id"],
-                        "status": "successful"
-                    }
+        conn.commit()
 
         return jsonify(response_data), response_status
 
-    except sqlite3.Error:
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+
         app.logger.exception("Pickup code verification failed.")
 
         return jsonify({
             "error": "Verification failed. Please try again."
         }), 500
 
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 # --------------------------------------------------
 # STUDENT ORDER HISTORY / STATUS / RECEIPT
 # --------------------------------------------------
@@ -1726,59 +1997,68 @@ def verify_order_code():
 @app.route("/api/my-orders", methods=["GET"])
 @login_required
 def my_orders():
+    conn = None
+    cur = None
+
     try:
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
+        conn = get_connection()
+        cur = conn.cursor()
 
-            orders = connection.execute("""
-                SELECT id, total, status, payment_status, created_at,
-                       qr_token, pickup_code
-                FROM orders
-                WHERE student_id = ?
-                ORDER BY id DESC
-            """, (session["student_id"],)).fetchall()
+        cur.execute("""
+            SELECT id, total, status, payment_status, created_at,
+                   qr_token, pickup_code
+            FROM orders
+            WHERE student_id = %s
+            ORDER BY id DESC
+        """, (session["student_id"],))
 
-            result = []
+        orders = cur.fetchall()
+        result = []
 
-            for order in orders:
-                rows = connection.execute("""
-                    SELECT item_name, unit_price, quantity
-                    FROM order_items
-                    WHERE order_id = ?
-                    ORDER BY id
-                """, (order["id"],)).fetchall()
+        for order in orders:
+            cur.execute("""
+                SELECT item_name, unit_price, quantity
+                FROM order_items
+                WHERE order_id = %s
+                ORDER BY id
+            """, (order[0],))
 
-                is_paid = order["payment_status"] == "paid"
+            rows = cur.fetchall()
 
-                result.append({
-                    "order_id": order["id"],
-                    "total": order["total"],
-                    "status": order["status"],
-                    "payment_status": order["payment_status"],
-                    "created_at": order["created_at"],
+            is_paid = order[3] == "paid"
 
-                    # Only reveal collection credentials after payment.
-                    "qr_token": order["qr_token"] if is_paid else None,
-                    "pickup_code": order["pickup_code"] if is_paid else None,
+            result.append({
+                "order_id": order[0],
+                "total": order[1],
+                "status": order[2],
+                "payment_status": order[3],
+                "created_at": order[4],
 
-                    "items": [
-                        {
-                            "name": row["item_name"],
-                            "price": row["unit_price"],
-                            "quantity": row["quantity"]
-                        }
-                        for row in rows
-                    ]
-                })
+                # Only reveal collection credentials after payment.
+                "qr_token": order[5] if is_paid else None,
+                "pickup_code": order[6] if is_paid else None,
+
+                "items": [
+                    {
+                        "name": row[0],
+                        "price": row[1],
+                        "quantity": row[2]
+                    }
+                    for row in rows
+                ]
+            })
 
         return jsonify({"orders": result}), 200
 
-    except sqlite3.Error:
+    except Exception:
         app.logger.exception("Could not load student order history.")
         return jsonify({"error": "Could not load your orders."}), 500
 
-
-
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 @app.route("/api/orders/<int:order_id>/status", methods=["GET"])
 @login_required
@@ -1788,13 +2068,20 @@ def order_status(order_id):
     if not qr_token or len(qr_token) > 200:
         return jsonify({"error": "Invalid status request."}), 400
 
+    conn = None
+    cur = None
+
     try:
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            order = connection.execute("""
-                SELECT status, payment_status
-                FROM orders
-                WHERE id = ? AND qr_token = ? AND student_id = ?
-            """, (order_id, qr_token, session["student_id"])).fetchone()
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT status, payment_status
+            FROM orders
+            WHERE id = %s AND qr_token = %s AND student_id = %s
+        """, (order_id, qr_token, session["student_id"]))
+
+        order = cur.fetchone()
 
         if order is None:
             return jsonify({"error": "Order not found."}), 404
@@ -1805,9 +2092,15 @@ def order_status(order_id):
             "payment_status": order[1]
         }), 200
 
-    except sqlite3.Error:
+    except Exception:
         app.logger.exception("Could not retrieve order status.")
         return jsonify({"error": "Could not retrieve order status."}), 500
+
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 
 @app.route("/api/orders/<int:order_id>/receipt", methods=["GET"])
@@ -1818,53 +2111,72 @@ def order_receipt(order_id):
     if not qr_token or len(qr_token) > 200:
         return jsonify({"error": "Invalid receipt request."}), 400
 
+    conn = None
+    cur = None
+
     try:
-        with sqlite3.connect(DATABASE, timeout=10) as connection:
-            connection.row_factory = sqlite3.Row
+        conn = get_connection()
+        cur = conn.cursor()
 
-            order = connection.execute("""
-                SELECT id, total, status, payment_status,
-                       qr_token, pickup_code
-                FROM orders
-                WHERE id = ? AND qr_token = ? AND student_id = ?
-            """, (order_id, qr_token, session["student_id"])).fetchone()
+        cur.execute("""
+            SELECT id, total, status, payment_status,
+                   qr_token, pickup_code
+            FROM orders
+            WHERE id = %s
+              AND qr_token = %s
+              AND student_id = %s
+        """, (
+            order_id,
+            qr_token,
+            session["student_id"]
+        ))
 
-            if order is None:
-                return jsonify({"error": "Booking not found."}), 404
+        order = cur.fetchone()
 
-            if order["payment_status"] != "paid":
-                return jsonify({
-                    "error": "Receipt is available only after successful payment."
-                }), 403
+        if order is None:
+            return jsonify({"error": "Booking not found."}), 404
 
-            rows = connection.execute("""
-                SELECT item_name, unit_price, quantity
-                FROM order_items
-                WHERE order_id = ?
-                ORDER BY id
-            """, (order_id,)).fetchall()
+        if order[3] != "paid":
+            return jsonify({
+                "error": (
+                    "Receipt is available only after successful payment."
+                )
+            }), 403
+
+        cur.execute("""
+            SELECT item_name, unit_price, quantity
+            FROM order_items
+            WHERE order_id = %s
+            ORDER BY id
+        """, (order_id,))
+
+        rows = cur.fetchall()
 
         return jsonify({
-            "order_id": order["id"],
-            "total": order["total"],
-            "status": order["status"],
-            "payment_status": order["payment_status"],
-            "pickup_code": order["pickup_code"],
+            "order_id": order[0],
+            "total": order[1],
+            "status": order[2],
+            "payment_status": order[3],
+            "pickup_code": order[5],
             "items": [
                 {
-                    "name": row["item_name"],
-                    "price": row["unit_price"],
-                    "quantity": row["quantity"]
+                    "name": row[0],
+                    "price": row[1],
+                    "quantity": row[2]
                 }
                 for row in rows
             ]
         }), 200
 
-    except sqlite3.Error:
+    except Exception:
         app.logger.exception("Could not retrieve order receipt.")
         return jsonify({"error": "Could not retrieve receipt."}), 500
 
-
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 # --------------------------------------------------
 # STAFF ACCOUNT SETUP
@@ -1873,6 +2185,7 @@ def order_receipt(order_id):
 def set_staff_account():
     """Create or update the shared staff login without storing a plaintext password."""
     username = input("Staff username (not an email): ").strip()
+
     if not username or len(username) > 40:
         raise SystemExit("Username must contain 1 to 40 characters.")
 
@@ -1887,16 +2200,33 @@ def set_staff_account():
         raise SystemExit("Passwords do not match.")
 
     password_hash = generate_password_hash(password)
-    with sqlite3.connect(DATABASE) as conn:
-        conn.execute("""
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
             INSERT INTO staff_users (id, username, password_hash, updated_at)
-            VALUES (1, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) DO UPDATE SET
-                username = excluded.username,
-                password_hash = excluded.password_hash,
-                updated_at = CURRENT_TIMESTAMP
+            VALUES (1, %s, %s, CURRENT_TIMESTAMP::TEXT)
+            ON CONFLICT (id) DO UPDATE SET
+                username = EXCLUDED.username,
+                password_hash = EXCLUDED.password_hash,
+                updated_at = CURRENT_TIMESTAMP::TEXT
         """, (username, password_hash))
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        app.logger.exception("Staff account update failed")
+        raise SystemExit("Could not save the staff account.")
+
+    finally:
+        cur.close()
+        conn.close()
+
     print("Staff account saved. Keep the password private.")
+
 
 
 def sync_staff_account_from_env():
@@ -1915,18 +2245,32 @@ def sync_staff_account_from_env():
 
     password_hash = generate_password_hash(password)
 
-    with sqlite3.connect(DATABASE) as conn:
-        conn.execute("""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
             INSERT INTO staff_users
                 (id, username, password_hash, updated_at)
-            VALUES (1, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) DO UPDATE SET
-                username = excluded.username,
-                password_hash = excluded.password_hash,
-                updated_at = CURRENT_TIMESTAMP
+            VALUES (1, %s, %s, CURRENT_TIMESTAMP::TEXT)
+            ON CONFLICT (id) DO UPDATE SET
+                username = EXCLUDED.username,
+                password_hash = EXCLUDED.password_hash,
+                updated_at = CURRENT_TIMESTAMP::TEXT
         """, (username, password_hash))
 
-# Create/upgrade tables in-place. Do not delete canteen.db.
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        app.logger.exception("Staff bootstrap synchronization failed")
+        raise
+
+    finally:
+        cur.close()
+        conn.close()
+
+# Initialize and verify the PostgreSQL database.
 # Initialize database
 init_database()
 sync_staff_account_from_env()
